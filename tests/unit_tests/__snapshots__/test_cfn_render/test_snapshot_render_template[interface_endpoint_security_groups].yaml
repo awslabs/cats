@@ -1,0 +1,698 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CATS test infrastructure for testaccount
+Parameters:
+  CatsUdpReceiptToken:
+    Type: String
+    AllowedPattern: ^[0-9a-f]{32}$
+    Description: Token the EC2 UDP listener requires as a '{token}:' message prefix before recording a receipt in S3. Not a credential.
+# Code shared by every network target is embedded once and referenced via
+# FindInMap to stay within CloudFormation's 51,200 byte template body limit.
+# `userdata` is the script every EC2 listener runs at first boot, bar a few
+# shell variables: both server scripts, both systemd units and the commands that
+# install them (rendered from userdata.sh.j2). `probe` is the single network
+# probe: the Lambda handler and the SSM document run the same source, so
+# classification cannot drift between transports.
+Mappings:
+  CatsEmbeddedCode:
+    code:
+      userdata: |
+        cat > /usr/local/bin/udpserver << 'UDPEOF'
+        #!/usr/bin/python3
+        # Requires compatibility with Python 3.9.16
+        from __future__ import annotations
+
+        import argparse
+        import os
+        import re
+        import select
+        import socket
+        import subprocess  # nosec
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Must stay identical to CORRELATION_ID_REGEX in cats/resources/network_interact.py
+        # (this stdlib-only script cannot import it); test_correlation_id_parity.py guards drift.
+        RECEIPT_KEY_REGEX = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+        # Each receipt is one AWS CLI process (about a second). Writes run off the receive
+        # loop so a burst of datagrams drains the socket buffer instead of overflowing it,
+        # and a few run at once so a burst is written in seconds, not one per second.
+        S3_WRITERS = 4
+
+
+        def extract_receipt_key(message: str, receipt_token: str) -> str | None:
+            """Return the S3 key from a '{token}:{payload}' message, split on the first ':' only, or None to drop."""
+            token, delimiter, payload = message.partition(":")
+            if delimiter == "":
+                return None
+            if token != receipt_token:
+                return None
+            if RECEIPT_KEY_REGEX.fullmatch(payload) is None:
+                return None
+            return payload
+
+
+        def multi_port_server(ports: list[int], bucketname: str, receipt_token: str) -> None:
+            sockets = []
+
+            for port in ports:
+                server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # Security rationale: the listener accepts test traffic on explicitly configured, security-group-restricted ports.
+                # S3 writes also require the per-deployment UDP receipt token, so binding all instance interfaces is intentional.
+                # nosemgrep: python_bind-all-interfaces_rule-general-bindall-interfaces  # noqa: ERA001
+                server_socket.bind(("0.0.0.0", port))  # noqa: S104  # nosec B104
+                sockets.append(server_socket)
+            print("listening for UDP on ports", ports)
+            with ThreadPoolExecutor(max_workers=S3_WRITERS) as writers:
+                try:
+                    while True:
+                        readable, _, _ = select.select(sockets, [], [])
+                        for s in readable:
+                            try:
+                                (client_data, client_address) = s.recvfrom(1024)
+                            except OSError as e:
+                                # One bad datagram (an ICMP error queued on the socket, say) must not take the listener down.
+                                print(f"recvfrom failed on {s.getsockname()}: {e}")
+                                continue
+                            key = handle_datagram(client_data, client_address, receipt_token)
+                            if key is not None:
+                                writers.submit(put_s3_object, key, bucketname)
+                finally:
+                    for s in sockets:
+                        s.close()
+
+
+        def handle_datagram(client_data: bytes, client_address: object, receipt_token: str) -> str | None:
+            """Return a valid datagram's payload as the S3 key to write, or log the drop to journald and return None."""
+            message = client_data.decode("utf-8", errors="replace")
+            key = extract_receipt_key(message, receipt_token)
+            if key is None:
+                token, delimiter, _ = message.partition(":")
+                if delimiter == ":" and token == receipt_token:
+                    print(f"from [{client_address}] dropped datagram: receipt key failed validation pattern")
+                else:
+                    print(f"from [{client_address}] dropped datagram: missing or mismatched receipt token")
+                return None
+            print(f"from [{client_address}] received message: {key}")
+            return key
+
+
+        def put_s3_object(keyname: str, bucketname: str) -> None:
+            """Write the receipt through the preinstalled AWS CLI; a failed write is logged, never fatal.
+
+            The key is passed as `--key=VALUE`: the key pattern admits a leading '-', which the
+            two-argument form would parse as an option.
+            """
+            try:
+                subprocess.run(  # noqa: S603 # nosec
+                    ["aws", "s3api", "put-object", "--bucket", bucketname, f"--key={keyname}"],  # noqa: S607 # nosec
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"failed to write receipt {keyname}: aws exited {e.returncode}: {e.stderr.strip()}")
+            except OSError as e:
+                print(f"failed to write receipt {keyname}: {e}")
+
+
+        def parse_ports(value: str) -> list[int]:
+            return [int(s) for s in value.split(",")]
+
+
+        def main(argv: list[str], environ: dict[str, str]) -> None:
+            parser = argparse.ArgumentParser(description="Run a UDP server that writes each token-prefixed message to an S3 bucket")
+            parser.add_argument("bucketname", type=str, help="S3 bucket name to write delivered messages to as keys")
+            parser.add_argument("ports", type=str, help="comma-separated string of ints for desired port to listen for UDP messages")
+            args = parser.parse_args(argv)
+            receipt_token = environ.get("CATS_UDP_RECEIPT_TOKEN", "")
+            if receipt_token == "":
+                parser.error("CATS_UDP_RECEIPT_TOKEN must be set in the environment: the '{token}:' prefix every datagram must carry")
+            multi_port_server(parse_ports(args.ports), args.bucketname, receipt_token)
+
+
+        if __name__ == "__main__":
+            main(sys.argv[1:], dict(os.environ))
+        UDPEOF
+        chmod +x /usr/local/bin/udpserver
+
+        cat > /usr/local/bin/tcpserver << 'TCPEOF'
+        #!/usr/bin/python3
+        # Requires compatibility with Python 3.9.16
+        from __future__ import annotations
+
+        import argparse
+        import selectors
+        import socket
+        import types
+        from typing import Any, cast
+
+        sel = selectors.DefaultSelector()
+
+        RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+
+
+        def accept_wrapper(sock: socket.socket) -> None:
+            conn, addr = sock.accept()  # Should be ready to read
+            print(f"Accepted connection from {conn} {addr}")
+            conn.setblocking(False)
+            data = types.SimpleNamespace(addr=addr, inb=b"", outb=b"")
+            events = selectors.EVENT_READ | selectors.EVENT_WRITE
+            sel.register(conn, events, data=data)
+
+
+        def close_connection(sock: socket.socket) -> None:
+            sel.unregister(sock)
+            sock.close()
+
+
+        # type is selectors._EventMask - not compatible with python 3.9
+        def service_connection(key: selectors.SelectorKey, mask: Any) -> None:  # noqa: ANN401
+            if isinstance(key.fileobj, int):
+                raise TypeError("key.fileobj must be socket")
+            sock = cast(socket.socket, key.fileobj)
+            data = key.data
+            try:
+                if mask & selectors.EVENT_READ:
+                    recv_data = sock.recv(1024)  # Should be ready to read
+                    if not recv_data:
+                        print(f"Closing connection to {data.addr}")
+                        close_connection(sock)
+                        return
+                    data.outb += recv_data
+                if mask & selectors.EVENT_WRITE and data.outb:
+                    print(f"Received {data} on {sock}")
+                    sock.send(RESPONSE)  # Should be ready to write
+                    data.outb = b""
+                    sock.shutdown(socket.SHUT_WR)
+                    close_connection(sock)
+            except OSError as e:
+                # The peer reset or vanished mid-exchange. A TLS client rejecting the plaintext
+                # reply closes with unread bytes, so its kernel answers RST and shutdown() fails
+                # with ENOTCONN. One caller's exit must never take the listener down.
+                print(f"Dropping connection to {data.addr}: {e}")
+                close_connection(sock)
+
+
+        def main(ports: list[int]) -> None:
+            host = ""
+            for port in ports:
+                lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                lsock.bind((host, port))
+                lsock.listen()
+                print(f"Listening on {(host, port)}")
+                lsock.setblocking(False)
+                sel.register(lsock, selectors.EVENT_READ, data=None)
+
+            try:
+                while True:
+                    events = sel.select(timeout=None)
+                    for key, mask in events:
+                        if key.data is None:
+                            sock = cast(socket.socket, key.fileobj)
+                            accept_wrapper(sock)
+                        else:
+                            service_connection(key, mask)
+            except KeyboardInterrupt:
+                print("Caught keyboard interrupt, exiting")
+            finally:
+                sel.close()
+
+
+        def parse_ports(value: str) -> list[int]:
+            return [int(s) for s in value.split(",")]
+
+
+        if __name__ == "__main__":
+            parser = argparse.ArgumentParser(description="Run a TCP server that listens on specified ports for incoming TCP connections")
+            parser.add_argument(
+                "ports",
+                type=str,
+                help="desired ports to listen for TCP connections, separated by commas",
+            )
+
+            args = parser.parse_args()
+            main(parse_ports(args.ports))
+        TCPEOF
+        chmod +x /usr/local/bin/tcpserver
+
+        cat > /etc/systemd/system/tcpserver.service << 'TCPSVCEOF'
+        [Unit]
+        Description=CATS TCP listener: answers any connection with an empty 200 OK
+        StartLimitIntervalSec=0
+
+        [Service]
+        # The port list is the only per-listener value; it arrives through the env file the
+        # instance's user data writes, so this unit is identical on every listener and the
+        # template embeds it once. systemd reads the file as root before dropping to the
+        # dynamic user. Variables are unbraced: the braced form is Fn::Sub syntax in the template.
+        EnvironmentFile=/etc/cats/tcpserver.env
+        ExecStart=/usr/bin/python3 -u /usr/local/bin/tcpserver $CATS_TCP_PORTS
+        Restart=always
+        RestartSec=1
+        DynamicUser=yes
+        # A dynamic user has no passwd entry and no home. The AWS CLI resolves Path.home() at import
+        # and dies with "getpwuid(): uid not found" without one, so the unit gets a state directory
+        # of its own (writable under ProtectSystem=strict) and HOME points at it.
+        StateDirectory=cats-tcpserver
+        Environment=HOME=/var/lib/cats-tcpserver
+        AmbientCapabilities=CAP_NET_BIND_SERVICE
+        CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=yes
+        PrivateTmp=yes
+
+        [Install]
+        WantedBy=multi-user.target
+        TCPSVCEOF
+
+        cat > /etc/systemd/system/udpserver.service << 'UDPSVCEOF'
+        [Unit]
+        Description=CATS UDP listener: writes each token-prefixed datagram to the response bucket
+        StartLimitIntervalSec=0
+
+        [Service]
+        # Bucket, receipt token and ports are the only per-listener values; they arrive through
+        # the env file the instance's user data writes, so this unit is identical on every
+        # listener and the template embeds it once. systemd reads the file as root before
+        # dropping to the dynamic user, so the token never sits in a world-readable unit file,
+        # and the script reads it from the environment rather than argv, so it is not in `ps` output.
+        # Variables are unbraced: the braced form is Fn::Sub syntax in the template.
+        EnvironmentFile=/etc/cats/udpserver.env
+        ExecStart=/usr/bin/python3 -u /usr/local/bin/udpserver $CATS_BUCKET $CATS_UDP_PORTS
+        Restart=always
+        RestartSec=1
+        DynamicUser=yes
+        # A dynamic user has no passwd entry and no home. The AWS CLI resolves Path.home() at import
+        # and dies with "getpwuid(): uid not found" without one, so the unit gets a state directory
+        # of its own (writable under ProtectSystem=strict) and HOME points at it.
+        StateDirectory=cats-udpserver
+        Environment=HOME=/var/lib/cats-udpserver
+        AmbientCapabilities=CAP_NET_BIND_SERVICE
+        CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=yes
+        PrivateTmp=yes
+
+        [Install]
+        WantedBy=multi-user.target
+        UDPSVCEOF
+        install -d -m 700 /etc/cats
+        printf 'CATS_TCP_PORTS=%s\n' "$CATS_TCP_PORTS" > /etc/cats/tcpserver.env
+        printf 'CATS_BUCKET=%s\nCATS_UDP_RECEIPT_TOKEN=%s\nCATS_UDP_PORTS=%s\n' "$CATS_BUCKET" "$CATS_UDP_RECEIPT_TOKEN" "$CATS_UDP_PORTS" > /etc/cats/udpserver.env
+        chmod 600 /etc/cats/tcpserver.env /etc/cats/udpserver.env
+
+        systemctl daemon-reload
+        if [ -n "$CATS_TCP_PORTS" ]; then systemctl enable --now tcpserver.service; fi
+        if [ -n "$CATS_UDP_PORTS" ]; then systemctl enable --now udpserver.service; fi
+        systemctl stop sshd
+        systemctl disable sshd
+        unbound() {
+          for p in $(echo "$CATS_TCP_PORTS" | tr , ' '); do ss -Hltn "sport = :$p" | grep -q . || printf ' tcp/%s' "$p"; done
+          for p in $(echo "$CATS_UDP_PORTS" | tr , ' '); do ss -Hlun "sport = :$p" | grep -q . || printf ' udp/%s' "$p"; done
+        }
+        for _ in $(seq 40); do missing=$(unbound); [ -z "$missing" ] && break; sleep 0.5; done
+        if [ -n "$missing" ]; then echo "cats listeners not bound:$missing"; systemctl status tcpserver udpserver --no-pager -n 3; exit 1; fi
+        echo 'cats listeners ready'
+      probe: |
+        # Python 3.9 syntax, stdlib only, embedded verbatim: see README.md in this directory before editing.
+        from __future__ import annotations
+
+        import http.client
+        import json
+        import os
+        import socket
+        import ssl
+        import traceback
+        from typing import Any
+
+        TIMEOUT_SECONDS = 2
+        HTTP_TIMEOUT = 10
+
+
+        class ResolutionFailure(Exception):
+            pass
+
+
+        class NoHttpReply(OSError):
+            pass
+
+
+        RESULT_BY_EXCEPTION: dict[type[BaseException], str] = {
+            ResolutionFailure: "DNS_FAILURE",
+            ssl.SSLError: "TLS_FAILURE",
+            ConnectionRefusedError: "REFUSED",
+            ConnectionResetError: "REFUSED",
+            socket.timeout: "TIMEOUT",
+            TimeoutError: "TIMEOUT",
+            OSError: "FAILURE",
+            http.client.HTTPException: "FAILURE",
+        }
+
+        DNS_ERRNOS = {socket.EAI_NONAME, socket.EAI_AGAIN, socket.EAI_FAIL, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+
+
+        def classify(exc: BaseException) -> str:
+            if isinstance(exc, socket.gaierror) and exc.errno in DNS_ERRNOS:
+                return "DNS_FAILURE"
+            for cls in type(exc).__mro__:
+                if cls in RESULT_BY_EXCEPTION:
+                    return RESULT_BY_EXCEPTION[cls]
+            return "ERROR"
+
+
+        def _resolve(url: str, port: int, socktype: int) -> list[tuple[Any, ...]]:
+            try:
+                return socket.getaddrinfo(url, port, type=socktype)
+            except socket.gaierror:
+                raise
+            except OSError as e:
+                raise ResolutionFailure(str(e)) from None
+
+
+        def _attempt_http(url: str, port: int, scheme: str) -> int:
+            _attempt_tcp(url, port)
+            cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            conn = cls(url, port, timeout=HTTP_TIMEOUT)
+            try:
+                if scheme == "http":
+                    conn.connect()
+                try:
+                    conn.request("GET", "/")
+                    return conn.getresponse().status
+                except (TimeoutError, socket.timeout) as e:
+                    raise NoHttpReply(f"connected; no HTTP reply in {HTTP_TIMEOUT}s: {e}") from None
+            finally:
+                conn.close()
+
+
+        def _attempt_tcp(url: str, port: int) -> None:
+            addresses = _resolve(url, port, socket.SOCK_STREAM)
+            for i, (family, socktype, proto, _, address) in enumerate(addresses):
+                try:
+                    with socket.socket(family, socktype, proto) as s:
+                        s.settimeout(TIMEOUT_SECONDS)
+                        s.connect(address)
+                    return
+                except OSError:
+                    if i == len(addresses) - 1:
+                        raise
+
+
+        def _attempt_udp(url: str, port: int, message: str) -> None:
+            family, _, _, _, address = _resolve(url, port, socket.SOCK_DGRAM)[0]
+            with socket.socket(family, socket.SOCK_DGRAM) as s:
+                s.sendto(message.encode(), address)
+
+
+        def _failure(exc: BaseException) -> dict[str, object]:
+            result = classify(exc)
+            if result == "ERROR":
+                traceback.print_exc()
+            return {"result": result, "reason": str(exc), "http_status": None}
+
+
+        def probe(protocol: str, url: str, port: int, message: str | None = None) -> dict[str, object]:
+            http_status: int | None = None
+            try:
+                if protocol in ("http", "https"):
+                    http_status = _attempt_http(url, port, protocol)
+                elif protocol == "tcp":
+                    _attempt_tcp(url, port)
+                elif protocol == "udp":
+                    if message is None:
+                        raise ValueError("udp requires a message")
+                    _attempt_udp(url, port, message)
+                else:
+                    raise ValueError(f"Unsupported protocol: {protocol!r}")
+            except Exception as e:
+                return _failure(e)
+            return {"result": "SENT" if protocol == "udp" else "SUCCESS", "reason": None, "http_status": http_status}
+
+
+        def lambda_handler(event: dict[str, Any], context: object) -> dict[str, object]:
+            return probe(event["PROTOCOL"], event["TARGET_URL"], event["TARGET_PORT"], event.get("TARGET_MESSAGE"))
+
+
+        def main(env: dict[str, str]) -> dict[str, object]:
+            try:
+                return probe(env["SSM_Protocol"], env["SSM_TargetUrl"], int(env["SSM_TargetPort"]), env.get("SSM_TargetMessage") or None)
+            except Exception as e:
+                return _failure(e)
+
+
+        if __name__ == "__main__":
+            print(json.dumps(main(dict(os.environ))))
+
+Resources:
+  CatsTestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CATS-test-infra-testaccount-default-test-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::999999999999:root
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+
+  CatsResponseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteDaily
+            Status: Enabled
+            ExpirationInDays: 1
+  CatsResponseBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CatsResponseBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub arn:aws:s3:::${CatsResponseBucket}
+              - !Sub arn:aws:s3:::${CatsResponseBucket}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+  CatsEc2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CATS-test-infra-testaccount-ec2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub ec2.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      Policies:
+        # Exactly what SSM Agent needs to register and run commands. The AWS-managed
+        # AmazonSSMManagedInstanceCore also grants ssm:GetParameter(s) on every parameter
+        # and inventory/compliance writes, which a shell on this instance would inherit.
+        - PolicyName: SsmAgent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                Resource: "*"
+        - PolicyName: S3WriteAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub arn:aws:s3:::${CatsResponseBucket}/*
+  CatsEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref CatsEc2Role
+
+  Ec2SGprivateSubnet:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for CATS EC2 listener in privateSubnet
+      VpcId: vpc-00000000000000000
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 8080, ToPort: 8080, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 8080, ToPort: 8080, CidrIpv6: '::/0'}
+        - {IpProtocol: udp, FromPort: 5000, ToPort: 5000, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: udp, FromPort: 5000, ToPort: 5000, CidrIpv6: '::/0'}
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+        - {IpProtocol: '-1', CidrIpv6: '::/0'}
+  Ec2ListenerprivateSubnet:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: ami-0123456789abcdef0
+      NetworkInterfaces:
+        - {DeviceIndex: "0", AssociatePublicIpAddress: false, SubnetId: subnet-00000000000000000, GroupSet: [!Ref Ec2SGprivateSubnet]}
+      IamInstanceProfile: !Ref CatsEc2InstanceProfile
+      MetadataOptions: {HttpTokens: required}
+      BlockDeviceMappings: [{DeviceName: /dev/xvda, Ebs: {VolumeSize: 8, VolumeType: gp3, Encrypted: true}}]
+      Tags: [{Key: cats:managed, Value: "true"}, {Key: cats:stack, Value: !Ref AWS::StackName}]
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              CATS_TCP_PORTS=8080
+              CATS_UDP_PORTS=5000
+              CATS_BUCKET=${CatsResponseBucket}
+              CATS_UDP_RECEIPT_TOKEN=${CatsUdpReceiptToken}
+              ${Userdata}
+            - Userdata: !FindInMap [CatsEmbeddedCode, code, userdata]
+
+  CatsProbeDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: CATS-test-infra-testaccount-Probe
+      DocumentType: Command
+      Content:
+        schemaVersion: '2.2'
+        description: CATS network probe (http/https/tcp/udp)
+        parameters:
+          Protocol:
+            type: String
+            interpolationType: ENV_VAR
+            allowedValues:
+              - http
+              - https
+              - tcp
+              - udp
+          TargetUrl:
+            type: String
+            interpolationType: ENV_VAR
+          TargetPort:
+            type: String
+            interpolationType: ENV_VAR
+          TargetMessage:
+            type: String
+            interpolationType: ENV_VAR
+            default: ''
+        mainSteps:
+          - action: aws:runShellScript
+            name: probe
+            inputs:
+              runCommand:
+                - !Sub
+                  - |
+                    python3 - <<'CATSPROBE'
+                    ${Probe}
+                    CATSPROBE
+                  - Probe: !FindInMap [CatsEmbeddedCode, code, probe]
+  InterfaceEndpointSsmVpc1:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: vpc-00000000000000000
+      ServiceName: com.amazonaws.us-east-1.ssm
+      VpcEndpointType: Interface
+      SubnetIds: ["subnet-00000000000000000"]
+      SecurityGroupIds: ["sg-00000000000000000"]
+      PrivateDnsEnabled: true
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:PrincipalAccount: !Ref AWS::AccountId
+  CatsTestRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CatsTestRolePolicy
+      Roles:
+        - !Ref CatsTestRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CfnDescribeStacks
+            Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+          - Sid: S3ReadResponses
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:aws:s3:::${CatsResponseBucket}
+              - !Sub arn:aws:s3:::${CatsResponseBucket}/*
+          - Sid: SsmSendCommandDocuments
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource:
+              - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/CATS-test-infra-testaccount-Probe
+          - Sid: SsmSendCommandInstances
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+            Condition:
+              StringEquals:
+                ssm:resourceTag/cats:stack: !Ref AWS::StackName
+          - Sid: SsmReadCommands
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+              - ssm:DescribeInstanceInformation
+            Resource: "*"
+Outputs:
+  TestRoleArn:
+    Description: ARN of the CATS test role
+    Value: !GetAtt CatsTestRole.Arn
+  ResponseBucketName:
+    Description: Name of the response S3 bucket
+    Value: !Ref CatsResponseBucket
+  UdpReceiptToken:
+    Description: Token UDP senders prepend as '{token}:' for the listener to record a receipt in S3. Not a credential.
+    Value: !Ref CatsUdpReceiptToken
+
+  Ec2DnsNameprivateSubnet:
+    Value: !GetAtt Ec2ListenerprivateSubnet.PrivateDnsName
+  Ec2InstanceIdprivateSubnet:
+    Value: !Ref Ec2ListenerprivateSubnet
+  VpcIdprivateSubnet:
+    Value: vpc-00000000000000000
+  SubnetIdsprivateSubnet:
+    Value: subnet-00000000000000000
+  EnabledHandlersprivateSubnet:
+    Value: ec2

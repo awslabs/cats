@@ -1,0 +1,114 @@
+# serializer version: 1
+# name: test_snapshot_deploy_failure
+  '''
+  [Deploy] testaccount (111111111111): starting stack CATS-test-infra-testaccount
+  [Deploy] testaccount (111111111111): CATS-test-infra-testaccount CREATE_FAILED: Stack creation failed
+  [Deploy] testaccount (111111111111): CREATE_FAILED in <n>s
+  FAIL Deployment failed: CREATE_FAILED
+  
+  Resource failures:
+    CATS-test-infra-testaccount: Stack creation failed
+  
+  '''
+# ---
+# name: test_snapshot_deploy_success
+  '''
+  [Deploy] testaccount (111111111111): starting stack CATS-test-infra-testaccount
+  [Deploy] testaccount (111111111111): CREATE_COMPLETE in <n>s
+  [Deploy] testaccount (111111111111): EC2 listener i-0123456789abcdef0 (private) ready
+  OK Deployed successfully
+  
+  '''
+# ---
+# name: test_snapshot_deploy_unknown_account
+  '''
+  Usage: root infra deploy [OPTIONS] [account_names]...
+  Try 'root infra deploy --help' for help.
+  ╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ Invalid value: Account(s) not found in config: nonexistent. Configured accounts: testaccount                                                                                                         │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  
+  '''
+# ---
+# name: test_snapshot_deploy_with_account_and_all
+  '''
+  Usage: root infra deploy [OPTIONS] [account_names]...
+  Try 'root infra deploy --help' for help.
+  ╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ Invalid value: Cannot specify both account names and --all                                                                                                                                           │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  
+  '''
+# ---
+# name: test_snapshot_deploy_without_account_or_all
+  '''
+  Usage: root infra deploy [OPTIONS] [account_names]...
+  Try 'root infra deploy --help' for help.
+  ╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ Invalid value: Specify account name(s) or --all                                                                                                                                                      │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  
+  '''
+# ---
+# name: test_snapshot_destroy_nonexistent_stack
+  '''
+  [Destroy] testaccount (111111111111): starting stack CATS-test-infra-testaccount
+  Nothing to destroy - stack does not exist
+  
+  '''
+# ---
+# name: test_snapshot_status_deployed
+  '''
+  ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
+  ┃ Account     ┃ Status          ┃ Stack                       ┃ Version ┃
+  ┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
+  │ testaccount │ CREATE_COMPLETE │ CATS-test-infra-testaccount │ 1.0.0   │
+  └─────────────┴─────────────────┴─────────────────────────────┴─────────┘
+  
+  '''
+# ---
+# name: test_snapshot_status_deployed_by_other_release
+  '''
+  ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃ Account     ┃ Status          ┃ Stack                       ┃ Version                  ┃
+  ┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+  │ testaccount │ UPDATE_COMPLETE │ CATS-test-infra-testaccount │ 0.99.0 (installed 1.0.0) │
+  └─────────────┴─────────────────┴─────────────────────────────┴──────────────────────────┘
+  
+  '''
+# ---
+# name: test_snapshot_status_deployed_without_version_tag
+  '''
+  ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┓
+  ┃ Account     ┃ Status          ┃ Stack                       ┃ Version ┃
+  ┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━┩
+  │ testaccount │ CREATE_COMPLETE │ CATS-test-infra-testaccount │ unknown │
+  └─────────────┴─────────────────┴─────────────────────────────┴─────────┘
+  
+  '''
+# ---
+# name: test_snapshot_status_not_deployed
+  '''
+  ┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┓
+  ┃ Account     ┃ Status       ┃ Stack ┃ Version ┃
+  ┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━┩
+  │ testaccount │ not deployed │ -     │ -       │
+  └─────────────┴──────────────┴───────┴─────────┘
+  
+  '''
+# ---
+# name: test_snapshot_targets
+  '''
+  
+  testaccount (111111111111)
+    Stack: CATS-test-infra-testaccount
+  
+    Network targets:
+  
+      - private: vpc-00000000000000000, 1 subnet(s)
+  
+  
+  
+  
+  '''
+# ---

@@ -1,0 +1,297 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+
+{% if standalone -%}
+{% include 'base.md.j2' %}
+
+---
+
+{% endif -%}
+# Writing CATS Tests
+
+You are helping a user author pytest tests against deployed CATS infrastructure.
+The fastest path to a good test is to probe reality first, then codify what you
+confirmed as an assertion. MCP tools and `cats run` subcommands are made for
+that probe loop — use them before writing code.
+
+## Probe before you write
+
+If you have the CATS MCP server connected, use its tools. Otherwise, the same
+surface is available from any shell via `cats run`. Both return JSON.
+
+```bash
+cats run account-info --account myaccount
+cats run tcp-call     --account myaccount --target private --host example.com --port 443
+cats run http-call    --account myaccount --target private --host 10.0.1.5    --port 8080
+cats run tcp-call     --account myaccount --target private --host 10.0.1.5    --port 22
+cats run udp-call     --account myaccount --target private --host <other listener dns> --port 5000 --receiving-account other
+cats run receive-s3   --account other     --target private --correlation-id <uuid>
+```
+
+See the [CLI reference](https://awslabs.github.io/cats/api-reference/CLI.html) and [MCP reference](https://awslabs.github.io/cats/api-reference/MCP.html) for full details, or `cats prompts agentic` for the in-agent tool reference. Once you know what
+the infrastructure actually does, the pytest test writes itself.
+
+## Basic test structure
+
+```python
+from cats import AccountUnderTest, CatsNetworkResponse
+
+def test_example_com_443_reachable(myaccount_account: AccountUnderTest) -> None:
+    """Private subnet can open a TCP connection to example.com on 443."""
+    result = myaccount_account.private.tcp_call(host="example.com", port=443)
+    assert result == CatsNetworkResponse.SUCCESS
+```
+
+Match the method to the claim. `tcp_call` proves the path is open. `http_call` sends a
+plaintext `GET /`, so point it (and `cats run http-call`) at a port that speaks plain HTTP,
+such as a CATS listener's `tcp_listen_ports`: against a TLS port it returns `FAILURE` or
+`REFUSED`, never `SUCCESS`. `https_call` proves the TLS handshake and an HTTP answer, and is
+the only method that can return `TLS_FAILURE`.
+
+## Available fixtures
+
+Each account defined in `cats.yaml` becomes a fixture named `<keyname>_account`.
+Run `cats generate-types` after every config change so your IDE sees them.
+
+## Typing rule
+
+No generated types → annotate fixtures as `AccountUnderTest`. Generated types
+(`cats generate-types` produces `cats_types.py`) → use the protocols everywhere:
+`<Keyname>Account` for a specific account, `CatsAccountProtocol` for a helper
+that accepts any account. Do not mix the two — passing a protocol-typed fixture
+to an `AccountUnderTest`-typed function does not type-check.
+
+```python
+from cats_types import CatsAccountProtocol, MyaccountAccount
+
+def assert_no_public_buckets(account: CatsAccountProtocol) -> None:
+    """Helper accepting any account."""
+    ...
+
+def test_no_public_buckets(myaccount_account: MyaccountAccount) -> None:
+    assert_no_public_buckets(myaccount_account)
+```
+
+For dynamic network target access by name, use `getattr(account, target_name)`.
+
+Network targets appear as attributes on the fixture, matching
+`account_network_under_test` keys. Each returns a `NetworkHandler` with:
+
+- `.http_call(host, port)` / `.https_call(...)`
+- `.tcp_call(host, port)`
+- `.udp_call(host, port)`
+- `.receive_s3(sent)` on the receiving side, where `sent` is the result of a
+  `udp_call`. UDP ingestion is authenticated: CATS listeners drop datagrams
+  lacking a per-account receipt token, which `udp_call` prepends automatically —
+  never build the datagram yourself, and expect `receive_s3` to return `False`
+  for raw untokened sends.
+- `.shell(command)` — arbitrary shell command on the target EC2 instance; requires `allow_shell: true` on `account_settings` at deploy time. Runs as root with the EC2 instance's IAM role, not the CATS test role. Returns `ShellResult(stdout, stderr, exit_code, duration_ms, stdout_truncated, stderr_truncated)`. Use when http/tcp/udp aren't enough — `dig`, `traceroute`, `ip route`, `ss`, custom `curl` flags.
+
+Every network call returns a `CatsNetworkResult`. Compare it to a
+`CatsNetworkResponse` member with `==`; never with `is`, and never to a bare
+string (`result == "TIMEOUT"` is always `False`). The result also carries
+`reason` (the probe's error text), `http_status` (HTTP/HTTPS `SUCCESS` only),
+and `correlation_id` (UDP only). None of those take part in equality, and all of
+them are printed when an assertion fails, so a failing test explains itself.
+
+### UDP example
+
+```python
+def test_udp_reaches_listener(prod_account: AccountUnderTest) -> None:
+    sent = prod_account.private.udp_call(prod_account.private.ec2_dns_name, 5000)
+    assert sent == CatsNetworkResponse.SENT
+    assert prod_account.private.receive_s3(sent) is True
+```
+
+### `shell()` example
+
+```python
+def test_dns_resolves(prod_account: AccountUnderTest) -> None:
+    result = prod_account.private.shell("dig +short example.com")
+    assert result.exit_code == 0
+```
+
+## Test markers
+
+Use the `@cats` decorator to attach compliance standards and other metadata.
+Markers flow through to `report.json` and, when `reporting.report_formats`
+includes `oscal_ar`, into `assessment-results.json` as OSCAL observation
+properties and findings. For compliance workflows that need framework control
+IDs (`AC-2`, `CC6.1`, etc.) rather than the raw `standard_name` string, either
+pass `control_ids=[...]` directly to the decorator for per-test overrides, or
+implement the `pytest_cats_standards` pytest hook in the consuming repo's
+`conftest.py` to return a registry mapping your `standard_name` values to
+framework control IDs.
+
+```python
+from cats import cats
+
+@cats(standard_name="iso-1234")
+def test_compliance_requirement(myaccount_account: AccountUnderTest) -> None:
+    ...
+```
+
+`@cats` is optional: every test is recorded in `report.json` whether or not it is
+decorated, and only tests carrying a `standard_name` become compliance findings.
+Its keywords are exactly `standard_name`, `control_ids` and `control_group`; any
+other keyword is a custom marker that must be listed under
+`reporting.custom_markers` in cats.yaml, or the import raises `CatsUsageError`.
+Skipping is pytest's job (`@pytest.mark.skip`), not a `@cats` keyword.
+
+## Which tests run against this deployment
+
+Two facts decide it, and they live in different places because they are different
+kinds of knowledge:
+
+- **Structural** — which deployments a test applies to. Whoever writes the test knows
+  this, and declares it on the test with `@cats_requires(...)`.
+- **Situational** — a property of this environment or this policy. That belongs in
+  `test_selection` of cats.yaml, with a reason.
+
+```python
+from cats import cats, cats_requires
+
+@cats_requires("container-deployment")
+@cats(standard_name="ACME-C-DEP-1")
+def test_app_runs_as_ecs_task(myaccount_account: AccountUnderTest) -> None:
+    """Applies only to a container deployment."""
+
+@cats_requires("pipeline-deployment", "container-deployment")   # both must be provided
+@cats(standard_name="ACME-PIPE-1")
+def test_pipeline_signs_container_images(myaccount_account: AccountUnderTest) -> None:
+    """Applies only to the interaction of the two variants."""
+```
+
+```yaml
+reporting:
+  custom_markers: [mutating]
+
+test_selection:
+  provides: [container-deployment]        # what this deployment satisfies
+  excluded:
+    - marker: standard_name               # standard_name, cats_requires, or a declared custom marker
+      values: [ACME-G-SCP-34]
+      reason: "RDS not in use; risk accepted by the CISO"
+    - marker: mutating
+      values: [true]                      # a YAML boolean matches @cats(mutating=True); "true" does not
+      reason: "Change freeze; read-only run"
+```
+
+The rules:
+
+- A test runs only when **every** requirement it declares is provided (AND, no OR, no
+  negation). Names are free-form strings; a new variant is a new name. Mutually exclusive
+  variants are two positive requirements (`standard-deployment` / `container-deployment`).
+  A test with no `@cats_requires` always runs.
+- `provides` is unioned with what the test pack's `pytest_cats_provides` hook returns,
+  so a pack can provide its defaults from its conftest.
+- `excluded` holds a test back when any entry matches one of its marker values. The
+  `marker` must be `standard_name`, `cats_requires` or a name in `reporting.custom_markers`:
+  a typo is a `cats validate` error, never an exclusion that silently matches nothing.
+- Every held-back test is in the reports as `not_run` with its reason: the exclusion's
+  `reason`, or `requires {a, b}; not provided {b}`. A test `-k`, `-m` or `--deselect`
+  removed is **not** in the reports at all. An `excluded` entry that matched no test is named in the
+  terminal summary and `run.selection.unmatched_exclusions`.
+- Providing a requirement only ever runs more tests. It never relaxes an assertion, and
+  tests cannot read the provided set: it is a precondition, not a feature flag. If a
+  control behaves differently in a variant, write two tests with two standard names.
+
+When adapting a test pack you have adopted: a test you add that applies only to some
+deployments gets `@cats_requires`; a control you opt out of gets an `excluded` entry
+with the reason, which keeps it in the evidence and lives in your config, so it survives
+taking upstream changes to the pack; delete the test when you want neither the control
+nor a record of it.
+
+## Parametrizing across every account
+
+To assert the same thing against every configured account, parametrize on the
+generated fixture names:
+
+```python
+import pytest
+from cats import CatsNetworkResponse, GetAccountFixture, cats, get_account_fixture_names
+
+@cats(standard_name="no-ssh-port")
+@pytest.mark.parametrize("fixturename", get_account_fixture_names())
+def test_ssh_closed(fixturename: str, get_account_fixture: GetAccountFixture) -> None:
+    account = get_account_fixture(fixturename)
+    result = account.private.tcp_call(host=account.private.ec2_dns_name, port=22)
+    # REFUSED: nothing listens on 22 (sshd is disabled on the CATS listener), and this
+    # self-call never leaves the host so security groups don't apply. From any other
+    # host (e.g. the lambda handler) an unlisted port returns TIMEOUT instead: the
+    # listener's CATS-managed group only admits configured tcp/udp_listen_ports.
+    assert result == CatsNetworkResponse.REFUSED
+```
+
+## Network response semantics
+
+Assert the exact outcome, not just "not SUCCESS". Each value is a precise claim
+about what the probing endpoint observed; which control produced it is your
+interpretation, and belongs in the test docstring.
+
+- `SUCCESS` - connection established. Any HTTP response (including 3xx/4xx/5xx;
+  redirects are not followed) is SUCCESS. `result.http_status` carries the code:
+  assert on it when a proxy block page (403/407/451) must be told apart from the
+  real target.
+- `REFUSED` - RST received (refused or reset): the path is OPEN, nothing accepted.
+  For HTTP, a listener that accepted then closed without any response is also
+  REFUSED. If you expected traffic to be blocked, REFUSED means the control is NOT
+  working. A Network Firewall REJECT looks the same as nothing listening.
+- `TIMEOUT` - the TCP connect got no answer, consistent with a silent drop:
+  the expected evidence for "traffic is blocked" (SG, NACL, Network Firewall
+  DROP, route table, data perimeter). All silent drops look identical from the
+  endpoint, and transient loss is indistinguishable from enforcement.
+- `DNS_FAILURE` - the name did not resolve (NXDOMAIN/NODATA, or the resolver was
+  unreachable). What a Route 53 Resolver DNS Firewall block produces, and also
+  what a typo produces. No packet was ever sent to the target.
+- `TLS_FAILURE` - TCP connected, the TLS handshake failed: untrusted or mismatched
+  certificate, a plaintext listener on the port, protocol mismatch. What TLS
+  inspection with an untrusted CA produces. `https_call` only; the OpenSSL text
+  is in `result.reason`.
+- `FAILURE` - the path could not be proven open or blocked: a connect that
+  succeeded with no HTTP reply inside the budget (a hung backend, NOT a silent
+  drop; `result.reason` starts "connected; no HTTP reply"), or an unclassified
+  error (`ENETUNREACH`, `EHOSTUNREACH`, ...; the errno is in `result.reason`).
+  Never an expected value.
+- `SENT` - UDP only: the datagram left the host. Prove arrival with
+  `receive_s3(sent)`. UDP can also return `DNS_FAILURE` or `FAILURE`, never
+  `REFUSED` or `TIMEOUT`.
+
+### Denial tests
+
+A negative (isolation) test needs a known-ready listener at the target and an
+allowed-path positive control in the same run, otherwise a broken listener passes
+as "blocked". `TIMEOUT` is the only outcome consistent with a silent DROP.
+`REFUSED` means the path is open. `DNS_FAILURE` means the control that acted was
+the resolver, which is a different claim from "packets were dropped": assert it
+as `DNS_FAILURE`, not as a stand-in for `TIMEOUT`.
+
+## Running tests
+
+```bash
+cats test                    # Run with defaults (-vv -ra)
+cats test -k "test_name"     # Run specific test
+cats test --collect-only     # List tests without running
+```
+
+## Idiomatic rules
+
+- Write one assertion against a concrete expected value. No `in` checks, no
+  `startswith` — expected value, then `assert expected == actual`.
+- Name tests `test_<condition>_<expected_outcome>`.
+- If probing via MCP or `cats run` returned something unexpected, write the
+  failing test first to pin the bug, then fix.
+- Leave infrastructure ephemeral. Deploy, test, destroy — always.

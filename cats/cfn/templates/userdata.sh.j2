@@ -1,0 +1,65 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+{#- The script every CATS EC2 listener runs at first boot, minus its first lines. It is the
+    same on every listener, so render_userdata() renders it once per template into
+    Mappings.CatsEmbeddedCode.code.userdata, and each listener's UserData in stack.yaml.j2 is
+    a prefix that sets the four CATS_* variables and ends in the Fn::Sub variable Userdata,
+    which CloudFormation replaces with this. The assembled text passes through Fn::Sub, which
+    claims every dollar-brace expression, so shell variables here and in the unit files are
+    written unbraced ($CATS_TCP_PORTS). See ec2_server/README.md. -#}
+cat > /usr/local/bin/udpserver << 'UDPEOF'
+{{ code.udpserver_py }}
+UDPEOF
+chmod +x /usr/local/bin/udpserver
+
+cat > /usr/local/bin/tcpserver << 'TCPEOF'
+{{ code.tcpserver_py }}
+TCPEOF
+chmod +x /usr/local/bin/tcpserver
+
+cat > /etc/systemd/system/tcpserver.service << 'TCPSVCEOF'
+{{ code.tcpserver_service }}
+TCPSVCEOF
+
+cat > /etc/systemd/system/udpserver.service << 'UDPSVCEOF'
+{{ code.udpserver_service }}
+UDPSVCEOF
+
+{#- Root-only: systemd reads the env files as PID 1, before each unit drops to its dynamic user. #}
+install -d -m 700 /etc/cats
+printf 'CATS_TCP_PORTS=%s\n' "$CATS_TCP_PORTS" > /etc/cats/tcpserver.env
+printf 'CATS_BUCKET=%s\nCATS_UDP_RECEIPT_TOKEN=%s\nCATS_UDP_PORTS=%s\n' "$CATS_BUCKET" "$CATS_UDP_RECEIPT_TOKEN" "$CATS_UDP_PORTS" > /etc/cats/udpserver.env
+chmod 600 /etc/cats/tcpserver.env /etc/cats/udpserver.env
+
+systemctl daemon-reload
+{#- A unit with no port would exit at once and Restart=always would relaunch it every second. #}
+if [ -n "$CATS_TCP_PORTS" ]; then systemctl enable --now tcpserver.service; fi
+if [ -n "$CATS_UDP_PORTS" ]; then systemctl enable --now udpserver.service; fi
+systemctl stop sshd
+systemctl disable sshd
+{#- `enable --now` returns before Python has bound the sockets. unbound() prints each configured
+    port that has no listening socket yet; the loop gives them 20s. The script's last line is the
+    verdict `cats infra deploy` reads from the instance's serial console (cats/cfn/readiness.py),
+    which needs no network path from the instance, so a listener in a subnet with no route anywhere
+    is gated like any other. Every rendered byte here is template budget
+    (test_template_size_boundary), hence the terse shell and these being Jinja comments. #}
+unbound() {
+  for p in $(echo "$CATS_TCP_PORTS" | tr , ' '); do ss -Hltn "sport = :$p" | grep -q . || printf ' tcp/%s' "$p"; done
+  for p in $(echo "$CATS_UDP_PORTS" | tr , ' '); do ss -Hlun "sport = :$p" | grep -q . || printf ' udp/%s' "$p"; done
+}
+for _ in $(seq 40); do missing=$(unbound); [ -z "$missing" ] && break; sleep 0.5; done
+if [ -n "$missing" ]; then echo "{{ failed_marker }}$missing"; systemctl status tcpserver udpserver --no-pager -n 3; exit 1; fi
+echo '{{ ready_marker }}'

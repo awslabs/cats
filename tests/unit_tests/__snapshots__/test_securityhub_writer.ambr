@@ -1,0 +1,215 @@
+# serializer version: 1
+# name: test_snapshot_findings_file_after_delivery
+  '''
+  {
+    "schema_version": 1,
+    "run_id": "20260924T105317Z",
+    "cats_version": "0.99.3",
+    "region": "eu-west-1",
+    "aws_region": "us-east-1",
+    "unattributed": 1,
+    "no_standard": 0,
+    "not_run": 0,
+    "accounts": [
+      {
+        "account_name": "prod",
+        "account_id": "111111111111",
+        "role_arn": "arn:aws:iam::111111111111:role/CATS-test-infra-prod-default-test-role",
+        "product_arn": "arn:aws:securityhub:eu-west-1:111111111111:product/111111111111/default",
+        "delivery": {
+          "status": "imported",
+          "findings_imported": 2,
+          "detail": null,
+          "delivered_at": "2026-09-24T10:53:40.120Z"
+        },
+        "findings": [
+          {
+            "SchemaVersion": "2018-10-08",
+            "Id": "cats/CATS-test-infra-prod/us-east-1/e7f62400-e667-57d4-9e74-c0baa61196f1",
+            "ProductArn": "arn:aws:securityhub:eu-west-1:111111111111:product/111111111111/default",
+            "ProductName": "CATS",
+            "GeneratorId": "tests/test_net.py::test_prod_cannot_reach_dev",
+            "AwsAccountId": "111111111111",
+            "CreatedAt": "2026-09-24T10:53:19.000Z",
+            "UpdatedAt": "2026-09-24T10:53:19.000Z",
+            "Title": "test_prod_cannot_reach_dev",
+            "Description": "Prove the production network cannot reach development.",
+            "Types": [
+              "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+            ],
+            "Severity": {
+              "Label": "CRITICAL"
+            },
+            "FindingProviderFields": {
+              "Severity": {
+                "Label": "CRITICAL"
+              },
+              "Types": [
+                "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+              ]
+            },
+            "Resources": [
+              {
+                "Type": "AwsAccount",
+                "Id": "AWS::::Account:111111111111",
+                "Region": "us-east-1",
+                "Tags": {
+                  "env": "prod"
+                }
+              }
+            ],
+            "Compliance": {
+              "Status": "FAILED",
+              "RelatedRequirements": [
+                "SOC2-CC6.6"
+              ]
+            },
+            "RecordState": "ACTIVE",
+            "ProductFields": {
+              "cats/version": "0.99.3",
+              "cats/run_id": "20260924T105317Z",
+              "cats/nodeid": "tests/test_net.py::test_prod_cannot_reach_dev",
+              "cats/account_name": "prod",
+              "cats/aws_region": "us-east-1",
+              "cats/result": "failed",
+              "cats/accounts_in_test": "prod,dev",
+              "cats/error_message": "open"
+            },
+            "Remediation": {
+              "Recommendation": {
+                "Text": "Updated on every 'cats test' run and archived when the test passes. See report.json and securityhub-findings.json for run 20260924T105317Z."
+              }
+            }
+          },
+          {
+            "SchemaVersion": "2018-10-08",
+            "Id": "cats/CATS-test-infra-prod/us-east-1/0d6ca78d-97f6-5d97-a0e4-f87c8feb1d76",
+            "ProductArn": "arn:aws:securityhub:eu-west-1:111111111111:product/111111111111/default",
+            "ProductName": "CATS",
+            "GeneratorId": "tests/test_net.py::test_prod_egress_blocked",
+            "AwsAccountId": "111111111111",
+            "CreatedAt": "2026-09-24T10:53:19.000Z",
+            "UpdatedAt": "2026-09-24T10:53:19.000Z",
+            "Title": "test_prod_cannot_reach_dev",
+            "Description": "Prove the production network cannot reach development.",
+            "Types": [
+              "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+            ],
+            "Severity": {
+              "Label": "INFORMATIONAL"
+            },
+            "FindingProviderFields": {
+              "Severity": {
+                "Label": "INFORMATIONAL"
+              },
+              "Types": [
+                "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+              ]
+            },
+            "Resources": [
+              {
+                "Type": "AwsAccount",
+                "Id": "AWS::::Account:111111111111",
+                "Region": "us-east-1",
+                "Tags": {
+                  "env": "prod"
+                }
+              }
+            ],
+            "Compliance": {
+              "Status": "PASSED",
+              "RelatedRequirements": [
+                "SOC2-CC6.6"
+              ]
+            },
+            "RecordState": "ARCHIVED",
+            "ProductFields": {
+              "cats/version": "0.99.3",
+              "cats/run_id": "20260924T105317Z",
+              "cats/nodeid": "tests/test_net.py::test_prod_egress_blocked",
+              "cats/account_name": "prod",
+              "cats/aws_region": "us-east-1",
+              "cats/result": "passed",
+              "cats/accounts_in_test": "prod"
+            },
+            "Remediation": {
+              "Recommendation": {
+                "Text": "Updated on every 'cats test' run and archived when the test passes. See report.json and securityhub-findings.json for run 20260924T105317Z."
+              }
+            }
+          }
+        ]
+      },
+      {
+        "account_name": "dev",
+        "account_id": "222222222222",
+        "role_arn": "arn:aws:iam::222222222222:role/CATS-test-infra-dev-default-test-role",
+        "product_arn": "arn:aws:securityhub:eu-west-1:222222222222:product/222222222222/default",
+        "delivery": {
+          "status": "not_enabled",
+          "findings_imported": 0,
+          "detail": "InvalidAccessException: not subscribed",
+          "delivered_at": "2026-09-24T10:53:40.120Z"
+        },
+        "findings": [
+          {
+            "SchemaVersion": "2018-10-08",
+            "Id": "cats/CATS-test-infra-dev/us-east-1/e7f62400-e667-57d4-9e74-c0baa61196f1",
+            "ProductArn": "arn:aws:securityhub:eu-west-1:222222222222:product/222222222222/default",
+            "ProductName": "CATS",
+            "GeneratorId": "tests/test_net.py::test_prod_cannot_reach_dev",
+            "AwsAccountId": "222222222222",
+            "CreatedAt": "2026-09-24T10:53:19.000Z",
+            "UpdatedAt": "2026-09-24T10:53:19.000Z",
+            "Title": "test_prod_cannot_reach_dev",
+            "Description": "Prove the production network cannot reach development.",
+            "Types": [
+              "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+            ],
+            "Severity": {
+              "Label": "CRITICAL"
+            },
+            "FindingProviderFields": {
+              "Severity": {
+                "Label": "CRITICAL"
+              },
+              "Types": [
+                "Software and Configuration Checks/Industry and Regulatory Standards/SOC2-CC6.6"
+              ]
+            },
+            "Resources": [
+              {
+                "Type": "AwsAccount",
+                "Id": "AWS::::Account:222222222222",
+                "Region": "us-east-1"
+              }
+            ],
+            "Compliance": {
+              "Status": "FAILED",
+              "RelatedRequirements": [
+                "SOC2-CC6.6"
+              ]
+            },
+            "RecordState": "ACTIVE",
+            "ProductFields": {
+              "cats/version": "0.99.3",
+              "cats/run_id": "20260924T105317Z",
+              "cats/nodeid": "tests/test_net.py::test_prod_cannot_reach_dev",
+              "cats/account_name": "dev",
+              "cats/aws_region": "us-east-1",
+              "cats/result": "failed",
+              "cats/accounts_in_test": "prod,dev",
+              "cats/error_message": "open"
+            },
+            "Remediation": {
+              "Recommendation": {
+                "Text": "Updated on every 'cats test' run and archived when the test passes. See report.json and securityhub-findings.json for run 20260924T105317Z."
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+  '''
+# ---

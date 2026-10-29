@@ -1,0 +1,127 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+
+# CATS (Control Acceptance Testing Suite)
+
+CATS is a Python library and CLI that enables writing pytest tests against AWS accounts. It:
+
+1. Deploys temporary test infrastructure (IAM roles, Lambdas, EC2 listeners) into target AWS accounts
+2. Provides pytest fixtures that give tests access to these deployed resources
+3. Enables assertions about SCPs, network flows, IAM enforcement, and service behavior
+4. Cleans up infrastructure after testing
+
+CATS is designed for compliance testing, security validation, and proving that AWS controls work as intended.
+
+## Key Concepts
+
+### Two Personas
+
+**Deploy persona**: Uses a high-privilege role (e.g., `AWSControlTowerExecution`) that already exists in target accounts to deploy CATS infrastructure via CloudFormation. This is only used during `cats infra` commands.
+
+**Test persona**: Uses a reduced-privilege role that CATS creates in each target account: `{cfn_stack_prefix}{account}-default-test-role`, so `CATS-test-infra-prod-default-test-role` with the default prefix and an account keyname of `prod`. Tests assume this role to execute within target accounts.
+
+These can run from different AWS accounts - the deploy account doesn't have to be the parent account (the account tests run from).
+
+### Trust Model
+
+- The parent account is the account `cats test` runs from; its ID is `cats_deployment_settings.parent_account_id`
+- CATS creates test roles in each target account that trust the parent account
+- Tests run by assuming these roles from the parent account into each target account
+
+### Infrastructure Lifecycle
+
+CATS infrastructure is designed to be **ephemeral**:
+
+```
+cats infra deploy <account> → run tests → cats infra destroy <account>
+```
+
+**Warning**: Leaving infrastructure deployed costs money (EC2 instances) and creates security surface area. Always destroy after testing.
+
+## Understanding CATS Configuration
+
+Read `cats.yaml` to understand what's configured. The schema is in `.schema.json`. For configuration and setup guidance, run `cats prompts setup`.
+
+### From Config to Fixtures
+
+Each key in `accounts_under_test` becomes a pytest fixture named `{keyname}_account`:
+
+```yaml
+accounts_under_test:
+  workload_prod:    # → fixture: workload_prod_account
+    account_id: "222222222222"
+```
+
+### AccountUnderTest
+
+The fixture provides an `AccountUnderTest` object with:
+
+- `.account_id` - the 12-digit account ID
+- `.name` - the config keyname
+- `.session` - boto3 Session with assumed test role credentials
+- `.role.default` - same as `.session`
+- `.role.<name>` - a session for each role in `additional_roles`, by key
+
+### Network Targets
+
+Each key in `account_network_under_test` becomes an attribute on the fixture:
+
+```yaml
+accounts_under_test:
+  workload_prod:
+    account_id: "222222222222"
+    account_network_under_test:
+      private:    # → workload_prod_account.private
+        vpc_id: vpc-abc123
+        subnet_ids: [subnet-abc123]
+```
+
+Network targets return a `NetworkHandler` with methods:
+- `.http_call(host, port)` / `.https_call(...)` - make an HTTP(S) request
+- `.tcp_call(host, port)` - make a TCP connection
+- `.udp_call(host, port)` - send a UDP datagram (a per-account receipt token is prepended automatically; CATS listeners drop untokened datagrams)
+- `.receive_s3(sent)` - confirm a UDP datagram arrived, given the result of `udp_call`
+- `.shell(command)` - run arbitrary shell command on the target's EC2 instance; requires `allow_shell: true` on `account_settings` at deploy time. Runs as root with the EC2 instance's IAM role, not the CATS test role. Returns a `ShellResult` with `stdout`, `stderr`, `exit_code`.
+
+Every network call returns a `CatsNetworkResult`: compare it with `==` to a
+`CatsNetworkResponse` member (`SUCCESS`, `REFUSED`, `TIMEOUT`, `DNS_FAILURE`,
+`TLS_FAILURE`, `FAILURE`, or `SENT` for UDP). Its `reason`, `http_status`, and
+`correlation_id` fields are diagnostics that print on assertion failure but never
+take part in equality.
+
+## CLI Commands
+
+- `cats init` - Create initial cats.yaml and example test
+- `cats validate` - Check cats.yaml syntax and schema
+- `cats generate-types` - Generate typed fixtures for IDE autocomplete (run after editing cats.yaml)
+- `cats infra deploy <account...>` or `cats infra deploy --all` - Deploy test infrastructure to target account(s)
+- `cats infra destroy <account...>` or `cats infra destroy --all` - Remove test infrastructure
+- `cats infra status <account...>` - Stack status and deployed CATS version per account
+- `cats infra targets <account...>` - The accounts and network targets a deploy or destroy would touch
+- `cats infra show-template <account...>` - The CloudFormation template that would be deployed
+  (the three read-only commands default to every account when no keyname is given; only deploy and destroy have `--all`)
+- `cats test` - Run pytest tests
+- `cats run <subcommand>` - Probe deployed infrastructure from a shell, JSON out: `account-info`, `http-call`, `tcp-call`, `udp-call`, `receive-s3`, `shell`, `write-profile`
+- `cats mcp` - Serve the same probes to an AI agent over the Model Context Protocol
+- `cats prompts <name>` - Get AI assistant context
+
+## Available Prompts
+
+- `cats prompts overview` - General CATS concepts
+- `cats prompts setup` - Configuration and setup guidance
+- `cats prompts testing` - How to write CATS tests
+- `cats prompts agentic` - Tools, patterns and escalation rules for agents connected over MCP or `cats run`
+- `cats prompts --all` - Every prompt in one document; `cats prompts --dump-dir <dir>` writes them as files

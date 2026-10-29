@@ -1,0 +1,9 @@
+nav:
+  - index.md
+  - home.md
+  - getting-started
+  - concepts
+  - guides
+  - troubleshooting.md
+  - security.md
+  - api-reference

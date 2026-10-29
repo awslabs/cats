@@ -1,0 +1,261 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -vv"
+# Plain `uv run pytest` runs the unit suite only; integration tests are an
+# explicit `uv run pytest tests/integration`. Parallelize with -n <N> as needed.
+testpaths = ["tests/unit_tests"]
+# pytest defaults plus __snapshots__: syrupy's .py snapshots are named after the
+# tests they pin, so collection would import them and litter pycache that syrupy
+# then reports as unused snapshots.
+norecursedirs = [".*", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg", "venv", "node_modules", "__snapshots__"]
+
+[tool.coverage.run]
+source = ["cats"]
+# CI starts coverage at interpreter start (COVERAGE_PROCESS_START) so the
+# pytest11-entry-point plugin and xdist workers are measured; each process
+# writes its own data file, combined with `coverage combine`.
+parallel = true
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+# The distribution name is `aws-cats`, but the import package is `cats`.
+# Hatchling can no longer infer the package from the name, so map it explicitly.
+[tool.hatch.build.targets.wheel]
+packages = ["cats"]
+
+# The sdist is the wheel's source plus what a downstream packager needs to build and test it,
+# as an allowlist: a path that is not named here is not shipped, so the internal tree stays out
+# of the artifact whichever remote builds it, and developer tooling, the lockfile, the docs site
+# and the example project stay out with it. The sdist-contents test pins the result to the
+# public file set.
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "cats",
+  "tests/__init__.py",
+  "tests/artifact_smoke.py",
+  "tests/conftest.py",
+  "tests/integration",
+  "tests/logging_isolation.py",
+  "tests/unit_tests",
+  "tests/utils.py",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "NOTICE",
+  "README.md",
+  "SECURITY.md",
+]
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.lint]
+
+# CPY001 is preview-only; enable just it, not the whole preview rule set.
+preview = true
+explicit-preview-rules = true
+
+ignore = [
+    # # Not required: enforce all trailing commas
+    "COM812",
+    # # Nested if-statements are fine to decompose complex boolean logic..
+    "SIM102",
+    # Don't always use a ternary
+    "SIM108",
+    # Allow "assert"
+    "S101",
+]
+
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # Implicit string concatenation
+    "ISC",
+    # flake8-pytest-style
+    "PT",
+    # Warning
+    "W",
+    # Ruff-specific
+    "RUF",
+    # Bandit - mark with # nosec to work with external Bandit, # noqa:Sxxx for Ruff
+    # Bandit rules: external code scanners apply them, so they run here too
+    "S",
+    # Eradicate
+    "ERA",
+    # Annotations
+    "ANN",
+    # License header on every Python file. Preview rule, see explicit-preview-rules.
+    "CPY001",
+]
+
+# Generated files carry no per-file license header.
+[tool.ruff.lint.per-file-ignores]
+"tests/unit_tests/__snapshots__/*" = ["CPY001"]
+"example_cats_project/cats_types.py" = ["CPY001"]
+# The embedded scripts run on the EC2 listener's Python 3.9, where socket.timeout is not
+# TimeoutError; UP041 would fold the two and drop the 3.9 catch. See cats/cfn/ec2_server/README.md.
+"cats/cfn/ec2_server/*.py" = ["UP041"]
+
+[tool.ruff.lint.flake8-copyright]
+notice-rgx = 'Copyright Amazon\.com, Inc\. or its affiliates\. All Rights Reserved\.'
+
+[tool.ruff.lint.flake8-implicit-str-concat]
+# https://docs.astral.sh/ruff/settings/#lintflake8-implicit-str-concat
+allow-multiline = false
+
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+strict = true
+
+# Error output
+show_column_numbers = true
+show_error_codes = true
+show_error_context = true
+show_traceback = true
+color_output = true
+error_summary = true
+pretty = true
+cache_dir = ".mypy_cache/strict"
+
+# Additional strictness
+disallow_any_unimported = true
+strict_optional = true
+no_implicit_optional = true
+warn_no_return = true
+warn_unreachable = true
+
+# pydantic suggestions
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = true
+check_untyped_defs = true
+no_implicit_reexport = true
+
+# for strict mypy
+disallow_untyped_defs = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+warn_untyped_fields = true
+
+[project]
+authors = [{ name = "Amazon Web Services", email = "dvdcon@amazon.co.uk" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+dependencies = [
+    "boto3<2.0.0,>=1.34.139",
+    "pytest<10.0.0,>=9.0.3",
+    "pydantic<3.0.0,>=2.7",
+    "pydantic-settings[yaml]<3.0.0,>=2.5.2",
+    "typer<1.0.0,>=0.23",
+    "rich<15.0.0,>=13.0.0",
+    "jinja2<4.0.0,>=3.1.5",
+    "typing-extensions<5.0.0,>=4.6.1",
+]
+name = "aws-cats"
+version = "1.0.0"
+description = "Control Acceptance Testing Suite: test AWS controls, network paths, and account behavior across many accounts with pytest and ephemeral test infrastructure."
+readme = "README.md"
+keywords = ["aws", "testing", "pytest", "compliance", "security", "controls", "multi-account", "cloudformation"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Framework :: Pytest",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/awslabs/cats"
+Documentation = "https://awslabs.github.io/cats/"
+Repository = "https://github.com/awslabs/cats"
+Issues = "https://github.com/awslabs/cats/issues"
+Changelog = "https://github.com/awslabs/cats/blob/main/CHANGELOG.md"
+Versioning = "https://awslabs.github.io/cats/concepts/versioning.html"
+Security = "https://github.com/awslabs/cats/blob/main/SECURITY.md"
+
+[project.optional-dependencies]
+# `cats mcp` (the MCP server). An HTTP/auth/crypto stack (~60 packages) that most
+# test suites never need - kept out of the core install deliberately.
+mcp = ["fastmcp>=3.2,<4"]
+# Typed boto3 clients for IDE autocomplete and mypy on generated cats_types.py.
+# ~119 MB of stubs - opt in with `pip install 'aws-cats[types]'`.
+types = ["boto3-stubs[all]<2.0.0,>=1.34.139"]
+
+[project.entry-points.pytest11]
+cats = "cats.pytest_plugin"
+
+[project.scripts]
+cats = "cats.__main__:main"
+
+[dependency-groups]
+dev = [
+    "mypy<2.0.0,>=1.11.2",
+    "ruff<1.0.0,>=0.6.9",
+    "pytest<10.0.0,>=9.0.3",
+    "coverage<8.0.0,>=7.6.3",
+    "mkdocs<2.0.0,>=1.6.1",
+    "mdx-truly-sane-lists<2.0,>=1.3",
+    "mkdocs-awesome-pages-plugin<3.0.0,>=2.9.3",
+    "mkdocs-material<10.0.0,>=9.7.7",
+    "mkdocstrings[python]<1.0.0,>=0.26.2",
+    "griffe-pydantic<2.0.0,>=1.0.0",
+    "pytest-mock>=3.15.1",
+    "pytest-randomly>=4.0.1",
+    "types-requests>=2.32.4.20260107",
+    "types-pyyaml>=6.0.12.20250915",
+    "pre-commit>=4.5.1",
+    "syrupy>=5.0.0",
+    "moto[all]>=5.1.19",
+    "pytest-cov>=7.0.0",
+    # CI calls `coverage combine` / `coverage report` directly and relies on the
+    # permanent `.pth` hook (coverage >= 7.13.0) that starts measurement when
+    # COVERAGE_PROCESS_START is set; a transitive dependency via pytest-cov pins neither.
+    "coverage>=7.13",
+    "pytest-xdist>=3.5.0",
+    "jsonschema>=4.23",
+    "types-jsonschema>=4.23",
+    # Lints the assembled EC2 user data in the unit suite (test_cfn_render_userdata.py).
+    "shellcheck-py<1.0.0,>=0.11.0.1",
+    # The mcp/types extras' contents, needed by the dev loop itself:
+    # unit tests import cats.cli.mcp, and mypy --strict resolves the
+    # TYPE_CHECKING mypy_boto3 imports.
+    "fastmcp>=3.2,<4",
+    "boto3-stubs[all]<2.0.0,>=1.34.139",
+]

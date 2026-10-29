@@ -1,0 +1,83 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+<section class="mdx-problem">
+    <div class="md-grid md-typeset">
+        <h2>Configured isn&rsquo;t the same as correct</h2>
+        <p class="mdx-problem__lead">
+            An audit reads the policy and finds it attached. It cannot know what AWS does when the call is made.
+            CATS makes the call from your account and records the answer.
+        </p>
+        <div class="mdx-problem__grid">
+            <article class="mdx-flip mdx-reveal" style="--mdx-stagger: 0">
+                <div class="mdx-flip__inner">
+                    <div class="mdx-flip__face mdx-flip__front">
+                        <p class="mdx-flip__label">Manual audit</p>
+                        <p class="mdx-flip__claim">Can prod turn off GuardDuty?</p>
+                        <p class="mdx-flip__status mdx-flip__status--pass">{% include ".icons/material/check-circle-outline.svg" %}SCP text reviewed</p>
+                        <button class="mdx-flip__toggle" type="button">{% include ".icons/material/play.svg" %}Run the test</button>
+                    </div>
+                    <div class="mdx-flip__face mdx-flip__back">
+                        <p class="mdx-flip__label">CATS</p>
+                        <p class="mdx-flip__claim">Can prod turn off GuardDuty?</p>
+                        <p class="mdx-flip__status mdx-flip__status--pass">{% include ".icons/material/check-circle-outline.svg" %}No. The SCP denies it.</p>
+                        <pre class="mdx-flip__code"><code>with pytest.raises(ClientError):
+  guardduty.update_detector(
+    DetectorId=d, Enable=False)</code></pre>
+                        <p class="mdx-flip__result"><b class="mdx-flip__pass">PASSED</b> AccessDeniedException: explicit deny in a service control policy</p>
+                        <button class="mdx-flip__toggle" type="button" tabindex="-1">{% include ".icons/material/undo-variant.svg" %}Back to the audit</button>
+                    </div>
+                </div>
+            </article>
+            <article class="mdx-flip mdx-reveal" style="--mdx-stagger: 1">
+                <div class="mdx-flip__inner">
+                    <div class="mdx-flip__face mdx-flip__front">
+                        <p class="mdx-flip__label">Manual audit</p>
+                        <p class="mdx-flip__claim">Can prod reach dev on 443?</p>
+                        <p class="mdx-flip__status mdx-flip__status--pass">{% include ".icons/material/check-circle-outline.svg" %}Route tables reviewed</p>
+                        <button class="mdx-flip__toggle" type="button">{% include ".icons/material/play.svg" %}Run the test</button>
+                    </div>
+                    <div class="mdx-flip__face mdx-flip__back">
+                        <p class="mdx-flip__label">CATS</p>
+                        <p class="mdx-flip__claim">Can prod reach dev on 443?</p>
+                        <p class="mdx-flip__status mdx-flip__status--pass">{% include ".icons/material/check-circle-outline.svg" %}No. The traffic is dropped.</p>
+                        <pre class="mdx-flip__code"><code>prod.private.tcp_call(dev_host, 443)</code></pre>
+                        <p class="mdx-flip__result"><b class="mdx-flip__pass">PASSED</b> TIMEOUT</p>
+                        <button class="mdx-flip__toggle" type="button" tabindex="-1">{% include ".icons/material/undo-variant.svg" %}Back to the audit</button>
+                    </div>
+                </div>
+            </article>
+            <article class="mdx-flip mdx-reveal" style="--mdx-stagger: 2">
+                <div class="mdx-flip__inner">
+                    <div class="mdx-flip__face mdx-flip__front">
+                        <p class="mdx-flip__label">Manual audit</p>
+                        <p class="mdx-flip__claim">Can the read-only role write to a bucket?</p>
+                        <p class="mdx-flip__status mdx-flip__status--pass">{% include ".icons/material/check-circle-outline.svg" %}Policy JSON reviewed</p>
+                        <button class="mdx-flip__toggle" type="button">{% include ".icons/material/play.svg" %}Run the test</button>
+                    </div>
+                    <div class="mdx-flip__face mdx-flip__back">
+                        <p class="mdx-flip__label">CATS</p>
+                        <p class="mdx-flip__claim">Can the read-only role write to a bucket?</p>
+                        <p class="mdx-flip__status mdx-flip__status--fail">{% include ".icons/material/close-circle-outline.svg" %}Yes. The object was written.</p>
+                        <pre class="mdx-flip__code"><code>with pytest.raises(ClientError):
+  s3.put_object(Bucket=b, Key="probe")</code></pre>
+                        <p class="mdx-flip__result"><b class="mdx-flip__fail">FAILED</b> An inline policy on the role also grants s3:*</p>
+                        <button class="mdx-flip__toggle" type="button" tabindex="-1">{% include ".icons/material/undo-variant.svg" %}Back to the audit</button>
+                    </div>
+                </div>
+            </article>
+        </div>
+    </div>
+</section>

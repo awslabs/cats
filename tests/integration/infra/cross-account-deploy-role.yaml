@@ -1,0 +1,53 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Deploy into an account under test that has no existing cross-account deploy role
+# (AWSControlTowerExecution or equivalent), trusting the account CATS runs from. Give its name
+# to cats.yaml as deploy_role_name.
+#
+# This role is for CATS's own integration tests. It is administrator-level because it stands in
+# for AWSControlTowerExecution, which is what a Control Tower organization already has. An
+# adopter creating a deploy role for production should scope it to what a CATS stack creates
+# (cloudformation, iam, ec2, lambda, s3, ssm, logs, and securityhub when that report format is
+# used) and narrow the trust policy to the principal that runs `cats infra`, for example with an
+# aws:PrincipalArn condition.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploy role for CATS cross-account integration tests
+
+Parameters:
+  TrustedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: Account ID that CATS runs from, allowed to assume this role.
+
+Resources:
+  CATSDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CATS-integ-deploy-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${TrustedAccountId}:root"
+            Action:
+              # TagSession is required alongside AssumeRole when the calling session
+              # carries session tags.
+              - "sts:AssumeRole"
+              - "sts:TagSession"
+      ManagedPolicyArns:
+        # A deploy role, not a test role: it creates IAM roles, EC2 instances, Lambda functions, S3
+        # buckets and SSM documents, the same footprint AWSControlTowerExecution has in a real org.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"

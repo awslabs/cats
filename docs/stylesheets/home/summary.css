@@ -1,0 +1,41 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+.mdx-summary {
+  padding: var(--mdx-section-space) 1rem;
+  scroll-margin-top: 3rem; /* clear the sticky header when the scroll cue jumps here */
+  background: var(--md-default-bg-color);
+}
+
+.mdx-summary .md-grid {
+  max-width: 760px;
+}
+
+.mdx-summary h2 {
+  text-align: center;
+}
+
+.md-typeset ul.mdx-summary__list {
+  width: fit-content;
+  margin: 0 auto;
+}
+
+.md-typeset ul.mdx-summary__list li {
+  margin: 0 0 0.8rem;
+}
+
+.md-typeset .mdx-summary__list li::marker {
+  color: var(--cats-orange);
+}

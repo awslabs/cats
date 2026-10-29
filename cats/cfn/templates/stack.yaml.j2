@@ -1,0 +1,516 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CATS test infrastructure for {{ account_name }}
+Parameters:
+  CatsUdpReceiptToken:
+    Type: String
+    AllowedPattern: ^[0-9a-f]{32}$
+{#- No NoEcho, and exported as an Output, on purpose: the token is not a credential. It gates writes
+    of empty receipt objects by stray datagrams, and UDP senders learn it from the output, so anyone who
+    can DescribeStacks is meant to read it. docs/concepts/network-testing.md, "UDP receipts". #}
+    Description: Token the EC2 UDP listener requires as a '{token}:' message prefix before recording a receipt in S3. Not a credential.
+{%- set lambda_ns = namespace(any_lambda_handler=false) %}
+{%- set ns = namespace(any_ec2_handler=false, any_cats_instance_profile=false) %}
+{%- for target in network_targets %}
+{%- if 'lambda' in target.enabled_handlers %}
+{%- set lambda_ns.any_lambda_handler = true %}
+{%- endif %}
+{%- if 'ec2' in target.enabled_handlers %}
+{%- set ns.any_ec2_handler = true %}
+{%- endif %}
+{%- if not target.existing_ec2_instance_profile_name %}
+{%- set ns.any_cats_instance_profile = true %}
+{%- endif %}
+{%- endfor %}
+{%- if network_targets %}
+# Code shared by every network target is embedded once and referenced via
+# FindInMap to stay within CloudFormation's 51,200 byte template body limit.
+# `userdata` is the script every EC2 listener runs at first boot, bar a few
+# shell variables: both server scripts, both systemd units and the commands that
+# install them (rendered from userdata.sh.j2). `probe` is the single network
+# probe: the Lambda handler and the SSM document run the same source, so
+# classification cannot drift between transports.
+Mappings:
+  CatsEmbeddedCode:
+    code:
+      userdata: |
+{{ userdata | indent(8, first=True) }}
+{%- if lambda_ns.any_lambda_handler or ns.any_ec2_handler %}
+      probe: |
+{{ probe_code | indent(8, first=True) }}
+{%- endif %}
+{%- endif %}
+Resources:
+  CatsTestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {{ resource_prefix }}-default-test-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:{{ deployment_settings.partition }}:iam::{{ deployment_settings.parent_account_id }}:root
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+{%- if account_settings.default_test_role_managed_policies %}
+      ManagedPolicyArns:
+{%- for policy in account_settings.default_test_role_managed_policies %}
+        - {{ policy }}
+{%- endfor %}
+{%- endif %}
+{%- if account_settings.default_test_role_inline_policies %}
+      Policies:
+{%- for policy_name, policy_document in account_settings.default_test_role_inline_policies.items() %}
+        - PolicyName: {{ policy_name }}
+          PolicyDocument: {{ policy_document | tojson }}
+{%- endfor %}
+{%- endif %}
+{% for role_name, role in account_settings.additional_roles.items() %}
+  CatsAdditionalRole{{ role_name | replace('_', '') }}:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {{ resource_prefix }}-{{ role_name }}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:{{ deployment_settings.partition }}:iam::{{ deployment_settings.parent_account_id }}:root
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+{%- if role.managed_policies %}
+      ManagedPolicyArns:
+{%- for policy in role.managed_policies %}
+        - {{ policy }}
+{%- endfor %}
+{%- endif %}
+{%- if role.inline_policies %}
+      Policies:
+{%- for policy_name, policy_document in role.inline_policies.items() %}
+        - PolicyName: {{ policy_name }}
+          PolicyDocument: {{ policy_document | tojson }}
+{%- endfor %}
+{%- endif %}
+{% endfor %}
+  CatsResponseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteDaily
+            Status: Enabled
+            ExpirationInDays: 1
+  CatsResponseBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CatsResponseBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub arn:{{ deployment_settings.partition }}:s3:::${CatsResponseBucket}
+              - !Sub arn:{{ deployment_settings.partition }}:s3:::${CatsResponseBucket}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+{%- if lambda_ns.any_lambda_handler %}
+{#- Every probe function runs with the same permissions, so one execution role serves them
+    all; the test role's invoke grant (one statement in CatsTestRolePolicy) names each function. #}
+  CatsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {{ resource_prefix }}-lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:{{ deployment_settings.partition }}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+{#- Without a declared group Lambda creates /aws/lambda/<function> on the first invoke (the deploy
+    readiness gate, so always) outside the stack, never expiring and surviving destroy. One group
+    per stack rather than per function: every probe writes to it, it costs its bytes once, and its
+    name never collides with a group Lambda created on its own. Probe output is a few lines per call. #}
+  CatsProbeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/{{ resource_prefix }}-probe
+      RetentionInDays: 7
+{%- endif %}
+{%- if ns.any_cats_instance_profile %}
+  CatsEc2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {{ resource_prefix }}-ec2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub ec2.${AWS::URLSuffix}
+            Action: sts:AssumeRole
+      Policies:
+        # Exactly what SSM Agent needs to register and run commands. The AWS-managed
+        # AmazonSSMManagedInstanceCore also grants ssm:GetParameter(s) on every parameter
+        # and inventory/compliance writes, which a shell on this instance would inherit.
+        - PolicyName: SsmAgent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                Resource: "*"
+        - PolicyName: S3WriteAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub arn:{{ deployment_settings.partition }}:s3:::${CatsResponseBucket}/*
+  CatsEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref CatsEc2Role
+{%- endif %}
+{% for target in network_targets %}
+{%- if 'lambda' in target.enabled_handlers %}
+{%- if not target.existing_security_group_ids %}
+  LambdaSG{{ target.name }}:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for CATS lambdas in {{ target.name }}
+      VpcId: {{ target.vpc_id }}
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+        - {IpProtocol: '-1', CidrIpv6: '::/0'}
+{%- endif %}
+{#- A stack-owned group blocks stack delete until Lambda releases its Hyperplane
+    ENIs, so provided groups are the fast path for destroy. #}
+  ProbeLambda{{ target.name }}:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: {{ resource_prefix }}-probe-{{ target.name }}
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt CatsLambdaRole.Arn
+      # Must exceed the probe's worst case: resolve + TIMEOUT_SECONDS connect + re-resolve
+      # + HTTP_TIMEOUT request (~12s before DNS). See cats/cfn/ec2_server/README.md, "Timeouts".
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref CatsProbeLogGroup
+      Code:
+        ZipFile: !FindInMap [CatsEmbeddedCode, code, probe]
+      VpcConfig:
+        SubnetIds: {{ target.subnet_ids | tojson }}
+        SecurityGroupIds:
+{%- if target.existing_security_group_ids %}
+{%- for sg_id in target.existing_security_group_ids %}
+          - {{ sg_id }}
+{%- endfor %}
+{%- else %}
+          - !Ref LambdaSG{{ target.name }}
+{%- endif %}
+{%- endif %}
+{%- if not target.existing_security_group_ids %}
+  Ec2SG{{ target.name }}:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for CATS EC2 listener in {{ target.name }}
+      VpcId: {{ target.vpc_id }}
+{#- Ingress is scoped to the configured listen ports: one IPv4 and one IPv6 rule per port,
+    so a dual-stack or IPv6-only VPC probes the listener rather than false-passing every
+    IPv6 denial test as TIMEOUT. With no ports configured there is no ingress at all (SSM
+    management is outbound-only). Any other ingress posture is existing_security_group_ids
+    territory. Flow style: each port is two rules, and a target may have thirty ports. #}
+{%- if target.tcp_listen_ports or target.udp_listen_ports %}
+      SecurityGroupIngress:
+{%- for protocol, ports in (('tcp', target.tcp_listen_ports), ('udp', target.udp_listen_ports)) %}
+{%- for port in ports %}
+        - {IpProtocol: {{ protocol }}, FromPort: {{ port }}, ToPort: {{ port }}, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: {{ protocol }}, FromPort: {{ port }}, ToPort: {{ port }}, CidrIpv6: '::/0'}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+        - {IpProtocol: '-1', CidrIpv6: '::/0'}
+{%- endif %}
+  Ec2Listener{{ target.name }}:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: {{ target.ec2_instance_type }}
+      ImageId: {{ target.ami_id }}
+{#- The interface is declared so that AssociatePublicIpAddress can be pinned: a subnet with
+    MapPublicIpOnLaunch would otherwise give the listener a public IPv4 address behind a group that
+    admits every source. IPv6 is left to the subnet (an IPv6-only subnet needs the address, and
+    the ::/0 rules exist so IPv6 paths can be probed); the docs say so. Flow style: this block is
+    paid once per target, and with MetadataOptions, BlockDeviceMappings and Tags in flow style the
+    listener renders 92 bytes smaller than before the interface was declared. #}
+      NetworkInterfaces:
+{%- if target.existing_security_group_ids %}
+        - {DeviceIndex: "0", AssociatePublicIpAddress: false, SubnetId: {{ target.subnet_ids[0] }}, GroupSet: [{{ target.existing_security_group_ids | join(', ') }}]}
+{%- else %}
+        - {DeviceIndex: "0", AssociatePublicIpAddress: false, SubnetId: {{ target.subnet_ids[0] }}, GroupSet: [!Ref Ec2SG{{ target.name }}]}
+{%- endif %}
+{%- if target.existing_ec2_instance_profile_name %}
+      IamInstanceProfile: {{ target.existing_ec2_instance_profile_name }}
+{%- else %}
+      IamInstanceProfile: !Ref CatsEc2InstanceProfile
+{%- endif %}
+{#- Flow style on the rest of the instance too: it is paid once per target, and this form keeps
+    every row of the documented size table (docs/guides/infrastructure.md) with the interface
+    declared above. Nothing here is abbreviated; only the layout is. #}
+      MetadataOptions: {HttpTokens: required}
+      BlockDeviceMappings: [{DeviceName: /dev/xvda, Ebs: {VolumeSize: 8, VolumeType: gp3, Encrypted: true}}]
+      Tags: [{Key: cats:managed, Value: "true"}, {Key: cats:stack, Value: !Ref AWS::StackName}]
+{#- The script every listener runs (Mappings: userdata) is the same on every listener; only these
+    variables differ. Fn::Sub's string must be a literal, so the shared script arrives as the
+    ${Userdata} variable, and CloudFormation joins the two into the script the instance boots with. #}
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              CATS_TCP_PORTS={{ target.tcp_listen_ports | join(',') }}
+              CATS_UDP_PORTS={{ target.udp_listen_ports | join(',') }}
+{%- if target.udp_listen_ports %}
+              CATS_BUCKET=${CatsResponseBucket}
+              CATS_UDP_RECEIPT_TOKEN=${CatsUdpReceiptToken}
+{%- endif %}
+              ${Userdata}
+            - Userdata: !FindInMap [CatsEmbeddedCode, code, userdata]
+{% endfor %}
+{%- if ns.any_ec2_handler %}
+{#- The probe is delivered inside the document as a quoted heredoc rather than
+    installed from userdata: the sender side then has no boot dependency, and the
+    Lambda and SSM transports resolve the same FindInMap key. #}
+  CatsProbeDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: {{ resource_prefix }}-Probe
+      DocumentType: Command
+      Content:
+        schemaVersion: '2.2'
+        description: CATS network probe (http/https/tcp/udp)
+        parameters:
+          Protocol:
+            type: String
+            interpolationType: ENV_VAR
+            allowedValues:
+              - http
+              - https
+              - tcp
+              - udp
+          TargetUrl:
+            type: String
+            interpolationType: ENV_VAR
+          TargetPort:
+            type: String
+            interpolationType: ENV_VAR
+          TargetMessage:
+            type: String
+            interpolationType: ENV_VAR
+            default: ''
+        mainSteps:
+          - action: aws:runShellScript
+            name: probe
+            inputs:
+              runCommand:
+                - !Sub
+                  - |
+                    python3 - <<'CATSPROBE'
+                    ${Probe}
+                    CATSPROBE
+                  - Probe: !FindInMap [CatsEmbeddedCode, code, probe]
+{%- endif %}
+{#- Every endpoint CATS creates carries this policy. An endpoint with no PolicyDocument takes AWS's
+    default, which allows any principal anywhere; this narrows it to principals in the account under
+    test, where every CATS caller of these endpoints lives (the listener's instance role, the probe
+    Lambda's role, the test role), and leaves the account's other workloads untouched. A gateway
+    endpoint policy must keep Principal "*" and may not wildcard aws:PrincipalAccount: this does
+    neither. A shared VPC whose consumers are other accounts needs aws:PrincipalOrgID instead
+    (docs/concepts/network-testing.md#endpoint-policy). #}
+{%- macro endpoint_policy() %}
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:PrincipalAccount: !Ref AWS::AccountId
+{%- endmacro %}
+{%- set has_endpoints = unique_vpcs | selectattr('gateway_endpoints') | list | length > 0 or unique_vpcs | selectattr('interface_endpoints') | list | length > 0 %}
+{%- if has_endpoints %}
+{%- for vpc in unique_vpcs %}
+{%- set vpc_index = loop.index %}
+{%- for endpoint in vpc.gateway_endpoints %}
+  GatewayEndpoint{{ endpoint.logical_id_part }}Vpc{{ vpc_index }}:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: {{ vpc.vpc_id }}
+      ServiceName: {{ endpoint_service_prefix }}.{{ deployment_settings.aws_region }}.{{ endpoint.service_name }}
+      VpcEndpointType: Gateway
+      RouteTableIds: {{ vpc.route_table_ids | tojson }}
+{{- endpoint_policy() }}
+{%- endfor %}
+{%- for endpoint in vpc.interface_endpoints %}
+  InterfaceEndpoint{{ endpoint | replace('.', '') | replace('-', '') | capitalize }}Vpc{{ vpc_index }}:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: {{ vpc.vpc_id }}
+      ServiceName: {{ endpoint_service_prefix }}.{{ deployment_settings.aws_region }}.{{ endpoint }}
+      VpcEndpointType: Interface
+      SubnetIds: {{ vpc.subnet_ids | tojson }}
+{%- if vpc.interface_endpoint_security_group_ids %}
+      SecurityGroupIds: {{ vpc.interface_endpoint_security_group_ids | tojson }}
+{%- endif %}
+      PrivateDnsEnabled: true
+{{- endpoint_policy() }}
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
+{#- Every CATS-owned grant on the test role is one statement in this one document, written by one
+    PutRolePolicy: the deploy readiness gate proves the document is live by exercising
+    CfnDescribeStacks as the test role, and a document reaches the IAM authorizer whole. It is the
+    last resource so every statement's reference is final. The user's own grants on the role
+    (default_test_role_* settings) are the user's writes and stay on the role resource above. #}
+  CatsTestRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CatsTestRolePolicy
+      Roles:
+        - !Ref CatsTestRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CfnDescribeStacks
+            Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: !Sub arn:{{ deployment_settings.partition }}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+          - Sid: S3ReadResponses
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:{{ deployment_settings.partition }}:s3:::${CatsResponseBucket}
+              - !Sub arn:{{ deployment_settings.partition }}:s3:::${CatsResponseBucket}/*
+{%- if ns.any_ec2_handler or account_settings.allow_shell %}
+          - Sid: SsmSendCommandDocuments
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource:
+{%- if ns.any_ec2_handler %}
+              - !Sub arn:{{ deployment_settings.partition }}:ssm:${AWS::Region}:${AWS::AccountId}:document/{{ resource_prefix }}-Probe
+{%- endif %}
+{%- if account_settings.allow_shell %}
+              - !Sub arn:{{ deployment_settings.partition }}:ssm:${AWS::Region}::document/AWS-RunShellScript
+{%- endif %}
+          - Sid: SsmSendCommandInstances
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource: !Sub arn:{{ deployment_settings.partition }}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+            Condition:
+              StringEquals:
+                ssm:resourceTag/cats:stack: !Ref AWS::StackName
+          - Sid: SsmReadCommands
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+              - ssm:DescribeInstanceInformation
+            Resource: "*"
+{%- endif %}
+{%- if lambda_ns.any_lambda_handler %}
+          - Sid: LambdaInvoke
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource:
+{%- for target in network_targets if 'lambda' in target.enabled_handlers %}
+              - !GetAtt ProbeLambda{{ target.name }}.Arn
+{%- endfor %}
+{%- endif %}
+{%- if securityhub_region %}
+{#- The securityhub report format imports findings into this account through the test
+    role. The default product ARN requires the caller's account to equal the finding's
+    AwsAccountId, so the grant is one action on this account's own product, in the one
+    Region the format is configured for. #}
+          - Sid: SecurityHubImportFindings
+            Effect: Allow
+            Action: securityhub:BatchImportFindings
+            Resource: !Sub arn:{{ deployment_settings.partition }}:securityhub:{{ securityhub_region }}:${AWS::AccountId}:product/${AWS::AccountId}/default
+{%- endif %}
+Outputs:
+  TestRoleArn:
+    Description: ARN of the CATS test role
+    Value: !GetAtt CatsTestRole.Arn
+  ResponseBucketName:
+    Description: Name of the response S3 bucket
+    Value: !Ref CatsResponseBucket
+  UdpReceiptToken:
+    Description: Token UDP senders prepend as '{token}:' for the listener to record a receipt in S3. Not a credential.
+    Value: !Ref CatsUdpReceiptToken
+{% for target in network_targets %}
+  Ec2DnsName{{ target.name }}:
+    Value: !GetAtt Ec2Listener{{ target.name }}.PrivateDnsName
+  Ec2InstanceId{{ target.name }}:
+    Value: !Ref Ec2Listener{{ target.name }}
+  VpcId{{ target.name }}:
+    Value: {{ target.vpc_id }}
+  SubnetIds{{ target.name }}:
+    Value: {{ target.subnet_ids | join(',') }}
+  EnabledHandlers{{ target.name }}:
+    Value: {{ target.enabled_handlers | join(',') }}
+{%- if 'lambda' in target.enabled_handlers %}
+  ProbeLambdaName{{ target.name }}:
+    Value: !Ref ProbeLambda{{ target.name }}
+{%- endif %}
+{% endfor %}

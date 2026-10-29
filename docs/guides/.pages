@@ -1,0 +1,7 @@
+title: Guides
+nav:
+  - writing-tests.md
+  - configuration.md
+  - infrastructure.md
+  - reporting.md
+  - standards-registry.md

@@ -1,0 +1,75 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+<section class="mdx-terminal-section">
+    <div class="md-grid md-typeset">
+        <h2>Deploy, test, destroy. Every run leaves evidence, not infrastructure.</h2>
+        <div class="mdx-terminal mdx-reveal" data-mdx-terminal>
+            <div class="mdx-terminal__bar">
+                <span class="mdx-terminal__dot" aria-hidden="true"></span>
+                <span class="mdx-terminal__dot" aria-hidden="true"></span>
+                <span class="mdx-terminal__dot" aria-hidden="true"></span>
+                <ol class="mdx-terminal__steps" aria-label="Demo steps">
+                    <li><button class="mdx-terminal__step-btn" type="button" data-step="0">deploy</button></li>
+                    <li><button class="mdx-terminal__step-btn" type="button" data-step="1">test</button></li>
+                    <li><button class="mdx-terminal__step-btn" type="button" data-step="2">destroy</button></li>
+                </ol>
+                <button class="mdx-terminal__replay" type="button" hidden>Replay</button>
+            </div>
+            <div class="mdx-terminal__stage">
+                <pre class="mdx-terminal__body" data-step="0"><code><span class="mdx-terminal__line mdx-terminal__cmd">cats infra deploy --all</span>
+<span class="mdx-terminal__line">[Deploy] prod (111111111111): CREATE_IN_PROGRESS</span>
+<span class="mdx-terminal__line">[Deploy] dev (222222222222): CREATE_IN_PROGRESS</span>
+<span class="mdx-terminal__line">[Deploy] dev (222222222222): CREATE_COMPLETE in 1m 12s (14 resources)</span>
+<span class="mdx-terminal__line">[Deploy] dev (222222222222): Test role CATS-test-infra-dev-default-test-role authorized</span>
+<span class="mdx-terminal__line">[Deploy] dev (222222222222): EC2 listener i-0f3e2d1c0b9a87654 (private) ready</span>
+<span class="mdx-terminal__line">[Deploy] dev (222222222222): <b class="mdx-terminal__pass">OK</b> Created in 1m 28s, ready</span>
+<span class="mdx-terminal__line">[Deploy] prod (111111111111): CREATE_COMPLETE in 1m 15s (14 resources)</span>
+<span class="mdx-terminal__line">[Deploy] prod (111111111111): Test role CATS-test-infra-prod-default-test-role authorized</span>
+<span class="mdx-terminal__line">[Deploy] prod (111111111111): EC2 listener i-0a1b2c3d4e5f67890 (private) ready</span>
+<span class="mdx-terminal__line">[Deploy] prod (111111111111): <b class="mdx-terminal__pass">OK</b> Created in 1m 33s, ready</span></code></pre>
+                <pre class="mdx-terminal__body" data-step="1"><code><span class="mdx-terminal__line mdx-terminal__cmd">cats test</span>
+<span class="mdx-terminal__line">============================= test session starts ==============================</span>
+<span class="mdx-terminal__line">platform linux -- Python 3.12.6, pytest-9.1.1, pluggy-1.6.0</span>
+<span class="mdx-terminal__line">plugins: aws-cats-1.0.0</span>
+<span class="mdx-terminal__line">collected 4 items</span>
+<span class="mdx-terminal__line"> </span>
+<span class="mdx-terminal__line">tests/test_isolation.py::test_prod_cannot_reach_dev <b class="mdx-terminal__pass">PASSED</b></span>
+<span class="mdx-terminal__line">tests/test_guardrails.py::test_scp_blocks_guardduty_modification <b class="mdx-terminal__pass">PASSED</b></span>
+<span class="mdx-terminal__line">tests/test_encryption.py::test_ebs_encryption_by_default[prod_account] <b class="mdx-terminal__pass">PASSED</b></span>
+<span class="mdx-terminal__line">tests/test_encryption.py::test_ebs_encryption_by_default[dev_account] <b class="mdx-terminal__pass">PASSED</b></span>
+<span class="mdx-terminal__line"> </span>
+<span class="mdx-terminal__line">---------------------- CATS reports: run 20261031T093312Z ----------------------</span>
+<span class="mdx-terminal__line">4 tests (4 passed) written to /home/runner/work/controls/controls/reports</span>
+<span class="mdx-terminal__line">  report-20261031T093312Z.json, report.json</span>
+<span class="mdx-terminal__line">  assessment-results-20261031T093312Z.json, assessment-results.json</span>
+<span class="mdx-terminal__line">  junit-20261031T093312Z.xml, junit.xml</span>
+<span class="mdx-terminal__line mdx-terminal__summary">============================== 4 passed in 31.08s ==============================</span></code></pre>
+                <pre class="mdx-terminal__body" data-step="2"><code><span class="mdx-terminal__line mdx-terminal__cmd">cats infra destroy --all</span>
+<span class="mdx-terminal__line">[Destroy] prod (111111111111): DELETE_IN_PROGRESS</span>
+<span class="mdx-terminal__line">[Destroy] dev (222222222222): DELETE_IN_PROGRESS</span>
+<span class="mdx-terminal__line">[Destroy] dev (222222222222): <b class="mdx-terminal__pass">OK</b> Destroyed in 52s (14 resources)</span>
+<span class="mdx-terminal__line">[Destroy] prod (111111111111): <b class="mdx-terminal__pass">OK</b> Destroyed in 55s (14 resources)</span></code></pre>
+                <button class="mdx-terminal__next" type="button" hidden>Next &rarr;</button>
+            </div>
+        </div>
+        <p class="mdx-terminal-section__caption">
+            Every account in <code>cats.yaml</code> is a fixture; one <code>cats test</code> runs the suite across
+            all of them, on your laptop or in CI. Each run writes evidence as JSON, OSCAL, JUnit, or findings in
+            AWS Security Hub, then the infrastructure is torn down.
+            <a href="guides/reporting.html">Reporting &rarr;</a>
+        </p>
+    </div>
+</section>

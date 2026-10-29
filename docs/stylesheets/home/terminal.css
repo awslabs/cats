@@ -1,0 +1,232 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+.mdx-terminal-section {
+  padding: var(--mdx-section-space) 1rem;
+  background: var(--md-default-bg-color);
+}
+
+.mdx-terminal-section h2,
+.mdx-terminal-section__caption {
+  text-align: center;
+}
+
+.mdx-terminal-section__caption {
+  max-width: 820px; /* the terminal's width, so the two read as one block */
+  margin-right: auto;
+  margin-left: auto;
+  color: var(--md-default-fg-color--light);
+}
+
+.mdx-terminal {
+  max-width: 820px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 0.6rem;
+  background: var(--cats-navy);
+  box-shadow: var(--md-shadow-z3);
+}
+
+.mdx-terminal__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--cats-squid-ink);
+}
+
+.mdx-terminal__dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--cats-gray);
+}
+
+.mdx-terminal__dot:first-child {
+  background: var(--cats-orange);
+}
+
+/* Step indicator: deploy → test → destroy, centered where a terminal shows its title.
+   Material styles .md-typeset ol/li/pre with display and margins; these rules out-rank them. */
+.md-typeset .mdx-terminal .mdx-terminal__steps {
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-typeset .mdx-terminal .mdx-terminal__steps li {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  width: auto;
+}
+
+.md-typeset .mdx-terminal .mdx-terminal__steps li + li::before {
+  content: "\2192";
+  margin: 0 0.3rem;
+  color: #fff;
+  font-size: 0.65rem;
+  opacity: 0.4;
+}
+
+.mdx-terminal__step-btn {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 1rem;
+  background: transparent;
+  color: #fff;
+  font-family: var(--md-code-font-family);
+  font-size: 0.65rem;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.mdx-terminal__step-btn:hover,
+.mdx-terminal__step-btn:focus-visible {
+  opacity: 1;
+}
+
+.mdx-terminal__step-btn.is-done {
+  opacity: 0.8;
+}
+
+.mdx-terminal__step-btn.is-active {
+  border-color: var(--cats-orange);
+  color: var(--cats-orange);
+  opacity: 1;
+}
+
+.mdx-terminal__replay,
+.mdx-terminal__next {
+  padding: 0.1rem 0.6rem;
+  border: 1px solid var(--cats-orange);
+  border-radius: 1rem;
+  background: transparent;
+  color: var(--cats-orange);
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+
+.mdx-terminal__replay:hover,
+.mdx-terminal__next:hover,
+.mdx-terminal__replay:focus-visible,
+.mdx-terminal__next:focus-visible {
+  background: var(--cats-orange);
+  color: var(--cats-navy);
+}
+
+.mdx-terminal__stage {
+  position: relative;
+}
+
+.mdx-terminal__next {
+  position: absolute;
+  right: 1rem;
+  bottom: 0.8rem;
+}
+
+.md-typeset .mdx-terminal__body {
+  margin: 0;
+}
+
+.md-typeset .mdx-terminal .mdx-terminal__body[hidden] {
+  display: none;
+}
+
+/* Step heights are equalized by terminal.js (stage min-height = the tallest step) */
+
+/* Reduced motion, or no IntersectionObserver: every step shown, in order, no controls */
+.mdx-terminal.is-static .mdx-terminal__steps,
+.mdx-terminal.is-static .mdx-terminal__next,
+.mdx-terminal.is-static .mdx-terminal__replay {
+  display: none;
+}
+
+.mdx-terminal.is-static .mdx-terminal__body + .mdx-terminal__body {
+  border-top: 1px solid var(--cats-squid-ink);
+}
+
+.md-typeset .mdx-terminal__body code {
+  display: block;
+  padding: 1rem 1.2rem 2.6rem; /* bottom clears the Next / Replay button */
+  background: transparent;
+  color: #fff;
+  font-size: 0.72rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mdx-terminal__cmd::before {
+  content: "$ ";
+  color: var(--cats-orange);
+}
+
+.mdx-terminal__pass,
+.mdx-terminal__summary {
+  color: var(--cats-green);
+}
+
+/* While typing, lines not yet reached keep their space so the window does not grow */
+.mdx-terminal.is-typing .mdx-terminal__line:not(.is-shown) {
+  visibility: hidden;
+}
+
+.mdx-terminal.is-typing .mdx-terminal__line.is-current::after {
+  content: "\2588";
+  color: var(--cats-orange);
+  animation: mdx-blink 1s steps(1) infinite;
+}
+
+@keyframes mdx-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.mdx-terminal__transcript {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: pre;
+}
+
+/* Narrow screens: the dots give way, the steps take the row, and Replay drops to the stage like Next */
+@media screen and (max-width: 44.9375em) {
+  .mdx-terminal__dot {
+    display: none;
+  }
+
+  .md-typeset .mdx-terminal .mdx-terminal__steps {
+    justify-content: flex-start;
+  }
+
+  .mdx-terminal__replay {
+    position: absolute;
+    right: 1rem;
+    bottom: 0.8rem;
+    z-index: 1;
+  }
+
+  .mdx-terminal {
+    position: relative;
+  }
+}

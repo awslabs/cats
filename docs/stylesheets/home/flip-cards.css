@@ -1,0 +1,249 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+.mdx-problem {
+  padding: var(--mdx-section-space) 1rem;
+  background: var(--md-code-bg-color);
+}
+
+.mdx-problem h2,
+.mdx-problem__lead {
+  max-width: 760px;
+  margin-right: auto;
+  margin-left: auto;
+  text-align: center;
+}
+
+.mdx-problem__lead {
+  color: var(--md-default-fg-color--light);
+}
+
+.mdx-problem__grid {
+  display: grid;
+  /* 3 across or stacked, so the three cards never split 2 + 1 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+  max-width: 1100px;
+  margin: 2rem auto 0;
+}
+
+@media screen and (max-width: 800px) {
+  .mdx-problem__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.mdx-flip {
+  min-width: 0; /* a long code line must not widen the grid track */
+  perspective: 1000px;
+}
+
+.mdx-flip:hover .mdx-flip__inner {
+  translate: 0 -4px;
+}
+
+.mdx-flip:hover .mdx-flip__face {
+  box-shadow: var(--md-shadow-z3);
+}
+
+.mdx-flip:hover .mdx-flip__front {
+  border-color: var(--cats-orange);
+}
+
+.md-typeset .mdx-flip p {
+  margin: 0;
+}
+
+.mdx-flip__inner {
+  display: grid;
+  height: 100%;
+  min-height: 13rem;
+  transition:
+    transform 0.6s,
+    translate 0.2s ease-out;
+  transform-style: preserve-3d;
+}
+
+.mdx-flip.is-flipped .mdx-flip__inner {
+  transform: rotateY(180deg);
+}
+
+.mdx-flip__face {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1.4rem;
+  border-radius: 0.6rem;
+  backface-visibility: hidden;
+  transition:
+    box-shadow 0.2s,
+    border-color 0.2s;
+}
+
+.mdx-flip__front {
+  border: 2px dashed var(--cats-gray);
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+.mdx-flip__back {
+  background: var(--cats-squid-ink);
+  color: #fff;
+  transform: rotateY(180deg);
+}
+
+.mdx-flip__label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.mdx-flip__back .mdx-flip__label {
+  color: var(--cats-orange);
+  opacity: 1;
+}
+
+.mdx-flip__claim {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+/* The outcome row, mirrored on both faces: what the audit did, then what CATS found */
+.mdx-flip__status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.mdx-flip__status svg {
+  flex: none;
+  width: 1.2em;
+  height: 1.2em;
+  fill: currentcolor;
+}
+
+.mdx-flip__status--pass {
+  color: var(--cats-status-success);
+}
+
+.mdx-flip__back .mdx-flip__status--pass {
+  color: var(--cats-green);
+}
+
+.mdx-flip__status--fail {
+  color: #ff5d64;
+}
+
+.mdx-flip__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  align-self: flex-start;
+  margin-top: auto;
+  padding: 0.3rem 0.9rem;
+  border: 2px solid var(--cats-orange);
+  border-radius: 20px;
+  background: var(--cats-orange);
+  color: var(--cats-squid-ink);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+
+.mdx-flip__toggle svg {
+  width: 1.1em;
+  height: 1.1em;
+  fill: currentcolor;
+}
+
+.mdx-flip__toggle:hover,
+.mdx-flip__toggle:focus-visible {
+  background: var(--cats-squid-ink);
+  color: var(--cats-orange);
+}
+
+.mdx-flip__back .mdx-flip__toggle {
+  background: transparent;
+  color: var(--cats-orange);
+}
+
+.mdx-flip__back .mdx-flip__toggle:hover,
+.mdx-flip__back .mdx-flip__toggle:focus-visible {
+  background: var(--cats-orange);
+  color: var(--cats-squid-ink);
+}
+
+.mdx-flip__toggle:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+}
+
+.md-typeset .mdx-flip__back .mdx-flip__code {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.2rem;
+  background: var(--cats-navy);
+}
+
+.md-typeset .mdx-flip__back .mdx-flip__code code {
+  padding: 0;
+  background: transparent;
+  color: var(--cats-green);
+  font-size: 0.55rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* The recorded outcome: the verdict pytest gives, then the answer AWS gave */
+.md-typeset .mdx-flip__back .mdx-flip__result {
+  font-size: 0.65rem;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+.mdx-flip__pass,
+.mdx-flip__fail {
+  margin-right: 0.3rem;
+  font-family: var(--md-code-font-family);
+  font-weight: 700;
+}
+
+.mdx-flip__pass {
+  color: var(--cats-green);
+}
+
+.mdx-flip__fail {
+  color: #ff5d64; /* on the dark back face in both schemes */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mdx-flip__inner {
+    transition: none;
+  }
+
+  .mdx-flip:hover .mdx-flip__inner {
+    translate: none;
+  }
+}

@@ -1,0 +1,168 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+.mdx-parallax {
+  --mdx-ground-height: 4rem;
+  position: relative;
+  /* A floor, not a fixed height: shorter than the window so the next section peeks in and the
+     page reads as scrollable, but the text layer can make the hero taller instead of being
+     clipped by overflow when the viewport is short or zoomed. A fixed height slid the buttons
+     past the bottom, where overflow:hidden clipped them and the ground wave painted over them. */
+  min-height: clamp(26rem, 70vh, 36rem);
+  overflow: hidden;
+  /* Matches layer-1-sky.webp, so no seam shows above the sky as parallax moves it down */
+  background: #1d2d3d;
+}
+
+.mdx-parallax__layer {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+.mdx-parallax__layer img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* The 16:9 art is cropped vertically on wide screens; --layer-y (set per layer in hero.html)
+     picks which part stays in view so the mountains show above the hills. */
+  object-position: center var(--layer-y, 100%);
+}
+
+/* The text layer is in normal flow (overriding the absolute .mdx-parallax__layer above) so its
+   height drives the hero's, while the four art layers stay absolute, inset:0, behind it. It sits
+   above both the art and the wavy ground, so the heading and buttons are never painted over, and
+   reserves the ground band below the text so it clears the wave when content sets the height. */
+.mdx-parallax__content {
+  position: relative;
+  inset: auto;
+  z-index: 2;
+  padding-bottom: var(--mdx-ground-height);
+}
+
+.mdx-parallax__ground {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: var(--mdx-ground-height);
+  fill: var(--md-default-bg-color);
+}
+
+.mdx-scroll-cue {
+  position: absolute;
+  bottom: 4.5rem;
+  left: 50%;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: #fff;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  transform: translateX(-50%);
+  transition: opacity 0.3s;
+}
+
+.mdx-scroll-cue:hover,
+.mdx-scroll-cue:focus-visible {
+  color: var(--cats-orange);
+}
+
+.mdx-scroll-cue svg {
+  width: 1.8rem;
+  height: 1.8rem;
+  fill: currentcolor;
+  animation: mdx-bounce 1.6s ease-in-out infinite;
+}
+
+.mdx-scroll-cue.is-scrolled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes mdx-bounce {
+  50% {
+    transform: translateY(0.4rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mdx-scroll-cue svg {
+    animation: none;
+  }
+}
+
+.mdx-hero {
+  margin: 0 1rem;
+  color: #fff;
+}
+
+.mdx-hero h1 {
+  margin-bottom: 1rem;
+  font-weight: 700;
+  font-size: 2.5rem;
+  color: currentcolor;
+}
+
+.mdx-hero p {
+  font-size: 1.2rem;
+  max-width: 800px;
+}
+
+.mdx-hero__content {
+  max-width: 550px;
+  padding: 4rem 0;
+}
+
+.mdx-hero .md-button {
+  margin-top: 0.5rem;
+  margin-right: 0.5rem;
+  color: var(--md-primary-bg-color);
+  background-color: var(--cats-squid-ink);
+  border-color: var(--md-primary-bg-color);
+}
+
+.mdx-hero .md-button:hover {
+  color: var(--cats-squid-ink);
+  background-color: var(--md-primary-bg-color);
+  border-color: var(--md-primary-bg-color);
+}
+
+.mdx-hero .md-button--primary {
+  color: var(--cats-squid-ink);
+  background-color: var(--cats-orange);
+  border-color: var(--cats-orange);
+}
+
+.mdx-hero .md-button--primary:hover {
+  color: var(--cats-orange);
+  background-color: var(--cats-squid-ink);
+  border-color: var(--cats-orange);
+}
+
+@media screen and (max-width: 600px) {
+  .mdx-hero h1 {
+    font-size: 1.8rem;
+  }
+
+  .mdx-hero p {
+    font-size: 1rem;
+  }
+
+  .mdx-hero__content {
+    padding: 2rem 0;
+  }
+}

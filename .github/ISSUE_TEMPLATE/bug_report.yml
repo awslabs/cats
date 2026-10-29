@@ -1,0 +1,50 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Bug report
+description: CATS did something other than what its documentation says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security issues here; follow [SECURITY.md](https://github.com/awslabs/cats/blob/main/SECURITY.md).
+        Remove account IDs, role ARNs, hostnames and credentials from anything you paste.
+  - type: input
+    id: version
+    attributes:
+      label: CATS version
+      description: Output of `cats --version`. If a deployed stack is involved, `cats infra status` shows the version that deployed it.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command or test you ran, what CATS reported, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant cats.yaml
+      description: The parts of the config involved, with identifiers replaced by placeholders.
+      render: yaml
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The failing output. For a network probe, the `result`, `reason` and `http_status` CATS returned.
+      render: text

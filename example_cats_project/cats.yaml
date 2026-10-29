@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=./.schema.json
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Example configuration: replace the account ID and the two SSM parameter names with your own.
+
+cats_deployment_settings:
+  allow_deploy_to_current_account: true
+  parent_account_id: "123456789012"
+  aws_region: eu-west-1
+  cfn_stack_prefix: "CATS-example-"
+
+global_network_settings:
+  udp_listen_ports: [5000]
+  tcp_listen_ports: [8080]
+  ec2_instance_type: t3.micro
+  gateway_endpoints:
+    - S3
+
+accounts_under_test:
+  myaccount:
+    account_id: "123456789012"
+    account_network_under_test:
+      private:
+        vpc_id: /cats/integ-test/vpc-id
+        subnet_ids:
+          - /cats/integ-test/subnet-id

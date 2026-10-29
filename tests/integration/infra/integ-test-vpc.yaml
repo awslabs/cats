@@ -1,0 +1,353 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Persistent VPC for CATS integration tests (v7)
+
+# Changing this template:
+#
+# deploy_base_stack.py applies it before the integration suite runs, so no manual redeploy is
+# needed - but every pipeline shares one stack, so two rules apply.
+#
+# 1. Bump the (vN) marker in Description with every change. The script never deploys a version
+#    older than the one already deployed, which is what stops a stale branch converging the
+#    stack backward while a newer pipeline's tests are running.
+# 2. Changes must be backward compatible. Branches older than the deployed version run their
+#    tests against it, so removing or renaming anything they use breaks them. Add, don't take
+#    away.
+
+# The peer is the cross account's base stack (integ-test-cross-vpc.yaml). All four parameters are
+# empty on a single-account run and the peering resources are then not created; deploy_base_stack.py
+# fills them from that stack's outputs when CATS_INTEG_CROSS_ACCOUNT_ID is set, and carries the
+# deployed values forward (UsePreviousValue) when it is not, so a local run never removes CI's
+# peering by converging the defaults.
+Parameters:
+  PeerVpcId:
+    Type: String
+    Default: ""
+    Description: VPC ID of the cross account's base stack, or empty for no peering
+  PeerOwnerId:
+    Type: String
+    Default: ""
+    Description: Account ID owning PeerVpcId
+  PeerRoleArn:
+    Type: String
+    Default: ""
+    Description: Role in the peer account that CloudFormation assumes to accept the peering
+  PeerCidr:
+    Type: String
+    Default: ""
+    Description: CIDR of PeerVpcId, routed through the peering from the endpoint subnet
+
+Conditions:
+  HasPeer: !Not [!Equals [!Ref PeerVpcId, ""]]
+
+Resources:
+  IntegTestVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.99.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-vpc
+
+  IntegTestSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      CidrBlock: 10.99.1.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-subnet
+
+  IntegTestRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref IntegTestVpc
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IntegTestSubnet
+      RouteTableId: !Ref IntegTestRouteTable
+
+  # Security group for SSM VPC endpoints
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS for SSM endpoints
+      VpcId: !Ref IntegTestVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.99.0.0/16
+          Description: HTTPS from the VPC to the SSM interface endpoints
+
+  # Pre-provisioned group for CATS handlers, referenced as existing_security_group_ids.
+  # A CATS stack that owns its lambda security group cannot be deleted until Lambda
+  # releases its Hyperplane ENIs (up to ~20 minutes), which dominates destroy time.
+  # CATS applies existing_security_group_ids to both the lambdas and the target's EC2
+  # listener, so this group carries the ingress the listener needs alongside the egress
+  # the lambdas need. One shared group also lets Lambda reuse Hyperplane ENIs across
+  # runs, since they are keyed by subnet and security group.
+  # Note: because this group now holds the lambda ENIs, deleting THIS stack blocks on
+  # Hyperplane ENI release instead. That is an accepted trade - the subnet already had
+  # the same property, and this stack is persistent while CATS stacks are per-run.
+  SharedHandlerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Shared group for CATS test handlers - self-referencing listener ingress, open egress
+      VpcId: !Ref IntegTestVpc
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Handler egress - probes, SSM, S3
+
+  # Only the handlers in this same group call the EC2 listeners, and only on the ports
+  # the integration configs declare as tcp_listen_ports / udp_listen_ports. Lambda
+  # Hyperplane ENIs carry the function's security group, so a self-referencing source
+  # matches lambda callers as well as EC2 ones. Separate ingress resources because an
+  # inline self-referencing rule is a circular reference in CloudFormation.
+  HandlerTcpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SharedHandlerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref SharedHandlerSecurityGroup
+      Description: Handlers in this group reach the TCP listener port
+
+  HandlerUdpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SharedHandlerSecurityGroup
+      IpProtocol: udp
+      FromPort: 5000
+      ToPort: 5000
+      SourceSecurityGroupId: !Ref SharedHandlerSecurityGroup
+      Description: Handlers in this group reach the UDP listener port
+
+  # Port 9999 is admitted but nothing listens on it, so a handler probing a listener in
+  # this group on 9999 gets a kernel RST: the arrangeable REFUSED for Lambda callers, which
+  # have no self-call path. The same port through a CATS-managed group is TIMEOUT.
+  HandlerRefusedPortIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SharedHandlerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 9999
+      ToPort: 9999
+      SourceSecurityGroupId: !Ref SharedHandlerSecurityGroup
+      Description: Admitted with no listener, so a probe gets REFUSED rather than TIMEOUT
+
+  # SSM endpoints required for EC2 handler
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref IntegTestSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref IntegTestSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref IntegTestSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # S3 gateway endpoint for UDP receipt storage
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref IntegTestRouteTable
+
+  # A subnet with no route to the SSM endpoints, an isolated data-tier shape
+  # (tests/integration/test_isolated_subnet.py). Its route table has no routes and its
+  # network ACL drops TCP 443 to the endpoint subnet: inside one VPC the implicit local route
+  # cannot be removed, so the ACL is what denies the endpoint ENIs, standing in for the empty
+  # route table a real isolated tier uses (no TGW route). Everything else stays open, so listeners here can be
+  # probed from the endpoint subnet and a Lambda here can probe back.
+  IntegTestIsolatedSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      CidrBlock: 10.99.2.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-isolated-subnet
+  IntegTestIsolatedRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref IntegTestVpc
+  IsolatedSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref IntegTestIsolatedSubnet
+      RouteTableId: !Ref IntegTestIsolatedRouteTable
+  IntegTestIsolatedNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref IntegTestVpc
+  IsolatedAclDenyEndpointsEgress:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref IntegTestIsolatedNetworkAcl
+      RuleNumber: 100
+      Egress: true
+      Protocol: 6
+      PortRange:
+        From: 443
+        To: 443
+      CidrBlock: 10.99.1.0/24
+      RuleAction: deny
+  IsolatedAclAllowEgress:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref IntegTestIsolatedNetworkAcl
+      RuleNumber: 200
+      Egress: true
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+  IsolatedAclAllowIngress:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref IntegTestIsolatedNetworkAcl
+      RuleNumber: 100
+      Egress: false
+      Protocol: -1
+      CidrBlock: 0.0.0.0/0
+      RuleAction: allow
+  IsolatedSubnetNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId: !Ref IntegTestIsolatedSubnet
+      NetworkAclId: !Ref IntegTestIsolatedNetworkAcl
+
+  VpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/vpc-id
+      Type: String
+      Value: !Ref IntegTestVpc
+
+  SubnetIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/subnet-id
+      Type: String
+      Value: !Ref IntegTestSubnet
+
+  IsolatedSubnetIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/isolated-subnet-id
+      Type: String
+      Value: !Ref IntegTestIsolatedSubnet
+
+  HandlerSecurityGroupIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/handler-sg-id
+      Type: String
+      Value: !GetAtt SharedHandlerSecurityGroup.GroupId
+
+  # Peering to the cross account's base VPC, for the tests where an EC2 listener in one account
+  # probes a listener in the other (tests/integration/test_cross_account_networking.py). This stack
+  # is the requester because only one side can own the connection; CloudFormation accepts it in the
+  # peer account through PeerRoleArn. The cross stack adds its own route once it knows the peering
+  # ID, which deploy_base_stack.py feeds back to it. Only the endpoint subnet's route table gets the
+  # route: the isolated subnet must stay unroutable.
+  PeeringConnection:
+    Type: AWS::EC2::VPCPeeringConnection
+    Condition: HasPeer
+    Properties:
+      VpcId: !Ref IntegTestVpc
+      PeerVpcId: !Ref PeerVpcId
+      PeerOwnerId: !Ref PeerOwnerId
+      PeerRoleArn: !Ref PeerRoleArn
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-peering
+
+  PeerRoute:
+    Type: AWS::EC2::Route
+    Condition: HasPeer
+    Properties:
+      RouteTableId: !Ref IntegTestRouteTable
+      DestinationCidrBlock: !Ref PeerCidr
+      VpcPeeringConnectionId: !Ref PeeringConnection
+
+  # The securityhub report format imports findings into the account's own Security Hub, which
+  # must be enabled in the Region. No default standards: CATS imports custom findings, which need
+  # no Config-backed controls, and standards would run checks that cost money every day.
+  SecurityHub:
+    Type: AWS::SecurityHub::Hub
+    Properties:
+      EnableDefaultStandards: false
+      Tags:
+        cats:integ-test: "true"
+
+Outputs:
+  VpcId:
+    Value: !Ref IntegTestVpc
+  SubnetId:
+    Value: !Ref IntegTestSubnet
+  IsolatedSubnetId:
+    Value: !Ref IntegTestIsolatedSubnet
+  HandlerSecurityGroupId:
+    Value: !GetAtt SharedHandlerSecurityGroup.GroupId
+  VpcIdParamName:
+    Value: !Ref VpcIdParam
+  SubnetIdParamName:
+    Value: !Ref SubnetIdParam
+  HandlerSecurityGroupIdParamName:
+    Value: !Ref HandlerSecurityGroupIdParam
+  # Conditional rather than empty: CloudFormation rejects an output with an empty value, so a
+  # single-account stack has no PeeringConnectionId output at all.
+  PeeringConnectionId:
+    Condition: HasPeer
+    Value: !Ref PeeringConnection

@@ -1,0 +1,65 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+<section class="mdx-parallax">
+    <div class="mdx-parallax__layer" data-depth="0.6">
+        <img src="assets/images/hero/layer-1-sky.webp" alt="" draggable="false" />
+    </div>
+    <div class="mdx-parallax__layer" data-depth="0.45" style="--layer-y: -4vw">
+        <img src="assets/images/hero/layer-2-mountains.webp" alt="" draggable="false" />
+    </div>
+    <div class="mdx-parallax__layer" data-depth="0.3" style="--layer-y: 75%">
+        <img src="assets/images/hero/layer-3-hills.webp" alt="" draggable="false" />
+    </div>
+    <div class="mdx-parallax__layer" data-depth="0.15">
+        <img src="assets/images/hero/layer-4-cat.webp" alt="" draggable="false" />
+    </div>
+    <div class="mdx-parallax__layer mdx-parallax__content" data-depth="0.35">
+        <div class="md-grid md-typeset">
+            <div class="mdx-hero">
+                <div class="mdx-hero__content">
+                    <h1>Test your AWS controls like you test code</h1>
+                    <p>
+                        Trust, but verify. A misconfigured policy can pass every audit and still let traffic through.
+                    </p>
+                    <p>
+                        CATS sends real calls and real traffic from your AWS accounts, so you find the gap before anyone else does.
+                    </p>
+                    <a
+                        href="getting-started/installation.html"
+                        class="md-button md-button--primary"
+                    >
+                        Get started
+                    </a>
+                    <a href="concepts/how-it-works.html" class="md-button">
+                        How it works
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    <a class="mdx-scroll-cue" href="#features">
+        {% include ".icons/material/chevron-down.svg" %}
+    </a>
+    <!-- Foreground is inline so it can take the page background colour in light and dark mode -->
+    <svg
+        class="mdx-parallax__ground"
+        viewBox="0 0 1600 120"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+    >
+        <path d="M0 60 C300 10 520 90 820 50 C1120 10 1340 80 1600 40 L1600 120 L0 120 Z" />
+    </svg>
+</section>

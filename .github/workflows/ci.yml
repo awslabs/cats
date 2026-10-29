@@ -1,0 +1,180 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly audit of the lock. Dependency review checks what a pull request changes;
+    # this catches a vulnerability disclosed against a version already pinned.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.11.28"
+
+jobs:
+  lint:
+    name: Lint (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+      - run: uv sync --locked
+      - run: uv run pre-commit run --all-files
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Reads uv.lock: the review on the first Dependabot pull request listed every changed
+      # package in the lock, so no dependency-submission step is needed.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
+  audit:
+    name: Audit locked dependencies
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+      # The runtime closure with every extra, exactly as the lock pins it; the dev group is
+      # not shipped to adopters and is covered by dependency review on the change that adds it.
+      - run: uv export --frozen --all-extras --no-dev --no-emit-project --format requirements-txt > requirements-audit.txt
+      - run: uvx pip-audit==2.10.1 --requirement requirements-audit.txt --strict --progress-spinner off
+
+  test:
+    name: Unit tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      # COVERAGE_PROCESS_START measures from interpreter start in the controller,
+      # every xdist worker and every pytester child, covering the pytest11 entry-point
+      # plugin that pytest-cov cannot see (it is imported before pytest-cov starts).
+      # Both paths are absolute because pytester children run in a temporary directory:
+      # a relative config path fails there with a ConfigError traceback on the child's
+      # stderr, and a relative data file would be left in the temporary directory
+      # instead of where `coverage combine` looks.
+      - run: uv run pytest tests/unit_tests/ -n 4
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage
+      - run: uv run coverage combine
+      - run: uv run coverage report --fail-under=80
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+      - run: uv sync --locked
+      - run: uv run mkdocs build --strict
+
+  artifact-smoke:
+    name: Artifact smoke (build, twine check, clean install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+      # The artifact an adopter installs, checked before release.yml publishes one: metadata
+      # renders, every runtime data file is inside, and a clean venv with no extras can run
+      # `cats --help`, `cats --version` and load the plugin in a project with no cats.yaml.
+      - run: uv build
+      # Keep in step with the "Check the artifact" step in release.yml.
+      - run: uvx twine==7.0.0 check dist/*
+      - run: uv run --no-project python tests/artifact_smoke.py dist/
+
+  floors:
+    name: Dependency floors (lowest-direct)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.11"
+      # Resolve every direct dependency at its declared floor: an untested floor is
+      # advertising. The dev group is excluded - only the published floors matter.
+      - run: uv sync --resolution lowest-direct --no-dev --all-extras
+      - run: uv run --no-sync cats --help
+      - run: uv run --no-sync python -c "import cats; import cats.pytest_plugin; import cats.cli.mcp"
+
+  zizmor:
+    name: Workflow security (zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+      # GH_TOKEN enables the online audits (impostor-commit, ref-confusion,
+      # stale-action-refs, known-vulnerable-actions); offline they never run.
+      - run: uvx zizmor==1.29.0 .github/workflows/
+        env:
+          GH_TOKEN: ${{ github.token }}

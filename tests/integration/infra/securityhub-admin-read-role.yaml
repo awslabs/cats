@@ -1,0 +1,54 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Deploy into the Security Hub delegated administrator of the organization the cross-account
+# integration target belongs to. The cross-account Security Hub test reads the administrator's
+# findings through this role to prove a finding imported into a member surfaces there. It can
+# read findings and nothing else: the test never writes to the administrator, and neither does
+# CATS. A purpose-built role rather than AWSControlTowerExecution because that role's trust
+# allows sts:AssumeRole only, and a CI session carrying transitive session tags needs
+# sts:TagSession on every hop of a role chain.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Read-only Security Hub role for CATS cross-account integration tests
+
+Parameters:
+  TrustedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: The member account under test, whose deploy role chains into this one.
+
+Resources:
+  CATSSecurityHubReadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CATS-integ-securityhub-read-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${TrustedAccountId}:root"
+            Action:
+              # TagSession is required alongside AssumeRole when the calling session
+              # carries session tags, which a chained CI session does.
+              - "sts:AssumeRole"
+              - "sts:TagSession"
+      Policies:
+        - PolicyName: CatsSecurityHubReadFindings
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: securityhub:GetFindings
+                Resource: "*"

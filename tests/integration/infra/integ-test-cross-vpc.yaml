@@ -1,0 +1,203 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Persistent VPC in the cross account for CATS integration tests (v4)
+
+# The cross account's half of the peered pair: integ-test-vpc.yaml in the home account is the other.
+# deploy_base_stack.py converges this stack when CATS_INTEG_CROSS_ACCOUNT_ID is set, through the
+# account's CATS-integ-deploy-role, before the home stack and once more after it. The same two rules
+# as the home template apply: bump the (vN) marker with every change, and only add.
+#
+# The home stack owns the peering connection and accepts it here through PeeringAcceptRole. This
+# stack cannot route to the home VPC until that peering exists, so PeeringConnectionId is empty on
+# the first pass and filled from the home stack's output on the second.
+#
+# The shape is the home endpoint subnet's: one subnet whose only paths out are the SSM endpoints
+# (so a CATS listener here registers and runs probes), the S3 gateway (UDP receipts) and the peering.
+
+Parameters:
+  HomeAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: Account the home base stack lives in, allowed to assume the peering accept role
+  PeeringConnectionId:
+    Type: String
+    Default: ""
+    Description: Peering connection created by the home base stack, or empty before it exists
+
+Conditions:
+  HasPeering: !Not [!Equals [!Ref PeeringConnectionId, ""]]
+
+Resources:
+  CrossVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.97.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-cross-vpc
+
+  CrossSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CrossVpc
+      CidrBlock: 10.97.1.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: CATS-integ-test-cross-subnet
+
+  CrossRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CrossVpc
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CrossSubnet
+      RouteTableId: !Ref CrossRouteTable
+
+  # The home VPC's CIDR (integ-test-vpc.yaml). Created on the second bootstrap pass, when the
+  # peering the home stack owns exists.
+  HomeRoute:
+    Type: AWS::EC2::Route
+    Condition: HasPeering
+    Properties:
+      RouteTableId: !Ref CrossRouteTable
+      DestinationCidrBlock: 10.99.0.0/16
+      VpcPeeringConnectionId: !Ref PeeringConnectionId
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS for SSM endpoints
+      VpcId: !Ref CrossVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.97.0.0/16
+          Description: HTTPS from the VPC to the SSM interface endpoints
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CrossVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref CrossSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CrossVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref CrossSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  Ec2MessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CrossVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref CrossSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CrossVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref CrossRouteTable
+
+  # What the home stack's PeerRoleArn names. CloudFormation accepts the peering by assuming this role
+  # with the credentials of the session that deployed the home stack - not a service principal, which
+  # is why trusting the home account's root is enough. That session is a federated or CI role session
+  # carrying transitive session tags, and a role assumed with session tags must allow sts:TagSession as
+  # well as sts:AssumeRole, the same reason cross-account-deploy-role.yaml grants both.
+  PeeringAcceptRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CATS-integ-peering-accept-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${HomeAccountId}:root
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: accept-peering
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # AcceptVpcPeeringConnection is authorized against two resources, the peering connection
+              # and the accepter VPC (both required in the Service Authorization Reference), so a grant
+              # scoped to one of them alone denies the call. This is the shape the VPC peering guide
+              # documents: any peering whose accepter side is this stack's VPC, and that VPC itself.
+              - Effect: Allow
+                Action: ec2:AcceptVpcPeeringConnection
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${CrossVpc}
+              - Effect: Allow
+                Action: ec2:AcceptVpcPeeringConnection
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-peering-connection/*
+                Condition:
+                  ArnEquals:
+                    ec2:AccepterVpc: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${CrossVpc}
+
+  # Read by the integration configs as SSM parameter names (tests/integration/constants.py), which
+  # CATS resolves in this account at deploy time, the way the home targets read theirs.
+  VpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/cross-vpc-id
+      Type: String
+      Value: !Ref CrossVpc
+
+  SubnetIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /cats/integ-test/cross-subnet-id
+      Type: String
+      Value: !Ref CrossSubnet
+
+Outputs:
+  VpcId:
+    Value: !Ref CrossVpc
+  SubnetId:
+    Value: !Ref CrossSubnet
+  VpcCidr:
+    Value: !GetAtt CrossVpc.CidrBlock
+  PeeringAcceptRoleArn:
+    Value: !GetAtt PeeringAcceptRole.Arn

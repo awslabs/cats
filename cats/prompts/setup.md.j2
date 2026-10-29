@@ -1,0 +1,162 @@
+{#-
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-#}
+
+{% if standalone -%}
+{% include 'base.md.j2' %}
+
+---
+
+{% endif -%}
+# Setup Assistant
+
+You are helping a user configure CATS for their AWS accounts.
+
+## Configuration File: cats.yaml
+
+The schema is available in `.schema.json`. Install a YAML LSP extension (e.g., 'YAML' for VSCode) for validation.
+
+### cats_deployment_settings
+
+The account that test roles will trust, and how `cats infra` deploys:
+
+```yaml
+cats_deployment_settings:
+  parent_account_id: "111111111111"                   # Test runner account - roles trust this
+  aws_region: us-east-1                               # Region for stacks and test sessions (required unless AWS_REGION is set)
+  deploy_role_name: AWSControlTowerExecution          # Role to assume for deploying
+```
+
+### accounts_under_test
+
+Target accounts to test. Each key becomes a pytest fixture name:
+
+```yaml
+accounts_under_test:
+  workload_prod:                    # This becomes the fixture name
+    account_id: "222222222222"
+    account_name: Production        # Optional metadata
+  workload_dev:
+    account_id: "333333333333"
+    account_network_under_test:     # Optional: for network testing
+      private:                      # Letters and digits only (CFN logical id)
+        vpc_id: vpc-0abc123def456
+        subnet_ids:
+          - subnet-0abc123def456
+```
+
+**Note:** For `vpc_id` and `subnet_ids`, you can use either:
+- Literal IDs: `vpc-0abc123def456`
+- Parameter Store names: `/my/vpc/id` (CATS resolves these at deploy time)
+
+### global_network_settings
+
+Only needed if testing network connectivity:
+
+```yaml
+global_network_settings:
+  interface_endpoints: []      # VPC endpoints to deploy
+  tcp_listen_ports: [443, 80]  # Ports for EC2 listeners
+  udp_listen_ports: []
+```
+
+### reporting
+
+Controls what CATS writes after a test run. With no `reporting` section, `cats test` writes `report.json` in the current directory and nothing else; `cats init` adds `report_dir` and `timestamped_files` (below). Skip this section unless the user asks for OSCAL, JUnit, Security Hub, or custom markers.
+
+```yaml
+reporting:
+  enabled: true                      # false disables all writers
+  report_formats: [cats_json]        # add oscal_ar for OSCAL 1.2.1 output, junit for junit.xml, securityhub (last) for Security Hub findings
+  custom_markers: []                 # names allowed in @cats(...) kwargs
+  report_dir: reports                # where every report file goes; relative to cats.yaml's directory
+  latest_files: true                 # report.json etc., overwritten each run
+  timestamped_files: true            # plus report-<run_id>.json etc., one immutable set per run
+  # securityhub:                     # only with securityhub in report_formats
+  #   aws_region: eu-west-1          # default: cats_deployment_settings.aws_region
+  #   failed_severity: HIGH          # CRITICAL | HIGH | MEDIUM | LOW | INFORMATIONAL
+```
+
+- `cats_json` → `report.json` (CATS-native, always safe to keep enabled).
+- `oscal_ar` → `assessment-results.json` for import into compliance-trestle or other OSCAL tooling. If the user mentions OSCAL, trestle, or framework control IDs, add `oscal_ar` and point them at either the `@cats(control_ids=[...], control_group="...")` decorator for per-test overrides or the `pytest_cats_standards` pytest hook for a workbook/CSV-driven registry. The [standards-registry guide](https://awslabs.github.io/cats/guides/standards-registry.html) has worked examples.
+- `junit` → `junit.xml` with a property per standard, account, tag and marker on every testcase. Add it when the user mentions CI dashboards or test-result publishing.
+- `securityhub` → one finding per test in each account's AWS Security Hub, imported through the CATS test role (a failure is an `ACTIVE` finding; the next pass archives it), plus `securityhub-findings.json` recording what was sent. Add it when the user mentions Security Hub, a delegated administrator, or wanting failures where their security team already looks. List it last. It grants the test role `securityhub:BatchImportFindings`, so tell the user to run `cats infra deploy` after enabling it, and that Security Hub must be enabled in each account (an account without it is skipped with a warning). Every import is a Security Hub finding-ingestion event: point at the Security Hub pricing page rather than quoting figures.
+- Multiple formats can be listed; each runs in order.
+- `cats init` writes `report_dir: reports` and `timestamped_files: true`, so every run keeps its evidence under a run id (`YYYYMMDDTHHMMSSZ`) and `report.json` is always the newest run. Keep them unless the user wants a single overwritten file (`timestamped_files: false`) or no local files at all (`latest_files: false` too). Add `reports/` to `.gitignore`.
+
+### test_selection
+
+Optional. Skip it unless the test pack has deployment variants (tests marked `@cats_requires(...)`) or the user wants to opt out of a control for a documented reason. It decides which tests run and keeps a record of the decision: every test it holds back is recorded as `not_run` with the reason, where a test `-k` or `-m` removes leaves no record.
+
+```yaml
+reporting:
+  custom_markers: [mutating]
+
+test_selection:
+  provides: [container-deployment]   # requirements this deployment satisfies; a test requiring one not listed is not run
+  excluded:
+    - marker: standard_name          # standard_name, cats_requires, or a name in reporting.custom_markers
+      values: [ACME-G-SCP-34]
+      reason: "RDS not in use; risk accepted by the CISO"
+    - marker: mutating
+      values: [true]                 # a YAML boolean matches @cats(mutating=True)
+      reason: "Change freeze; read-only run"
+```
+
+- `provides`: ask the user which variants of the deployment are in place; the test pack's documentation names the requirements its tests declare. The pack may also provide defaults from its conftest (`pytest_cats_provides`).
+- `excluded`: every entry needs a `reason`, which lands in every report. A `marker` that is not `standard_name`, `cats_requires` or a declared custom marker fails `cats validate`, on purpose: an exclusion that matched nothing would let the tests it was meant to hold back into the run.
+- Prefer an exclusion with a reason over deleting a test when the control should stay in the audit trail.
+
+## Setup Workflow
+
+1. Run `cats init` (optionally with `--parent-account-id` and `--deploy-role-name`).
+   Safe to re-run: an existing `cats.yaml` is never overwritten without `--force`
+2. Edit `cats.yaml` to add your accounts under test
+3. Run `cats validate` to check configuration
+4. Run `cats generate-types` for typed fixtures
+5. Run `cats infra deploy <account>` for each account (or `cats infra deploy --all`)
+6. Write and run tests with `cats test`
+7. Run `cats infra destroy <account>` to clean up
+
+- (Agentic) If your agent has the CATS MCP server connected, call `cats_validate`
+  after each cats.yaml edit — structured error feedback, no shell round-trips.
+  When a validation error is about a field you're unsure of, read the
+  `.schema.json` that `cats validate` writes beside the config: it is the
+  published schema, with every field's type, default and description.
+
+## Questions to Ask the User
+
+Ask in this order, grouping related questions:
+
+**First: Identity setup**
+1. What is the 12-digit AWS account ID that will run tests? (This account will assume roles into target accounts)
+2. What IAM role exists in your target accounts for deploying infrastructure? (e.g., AWSControlTowerExecution, OrganizationAccountAccessRole)
+
+**Then: Target accounts**
+3. Which AWS accounts do you want to test? Get account ID and a friendly name for each (e.g., "prod" with ID 123456789012)
+
+**Finally: Network testing (if needed)**
+4. Do you need network testing? If yes, for each account that needs it, get the VPC ID and subnet IDs.
+
+## Things to Avoid
+
+- Don't leave CATS infrastructure deployed - it costs money and creates security risk
+- Don't use invalid Python identifiers for account keys (no spaces, dashes, or special characters)
+- Don't forget to run `cats infra destroy` even if tests fail
+- Don't assume the deploy account and the parent account (the one tests run from) are the same
+
+## After Setup
+
+Run `cats validate` and `cats generate-types`, then run the appropriate prompt for next steps.

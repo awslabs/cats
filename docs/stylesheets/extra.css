@@ -1,0 +1,107 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* AWS brand palette. Orange is for accents only, never body text. */
+:root {
+  --cats-squid-ink: #232f3e;
+  --cats-navy: #161d26;
+  --cats-orange: #ff9900;
+  --cats-blue: #0073bb;
+  --cats-gray: #545b64;
+  --cats-green: #47ff94; /* Brand Green 400, for passing results on dark backgrounds */
+  --cats-status-success: #00802f;
+
+  --md-primary-fg-color: var(--cats-squid-ink);
+  --md-primary-fg-color--light: var(--cats-gray);
+  --md-primary-fg-color--dark: var(--cats-navy);
+  --md-accent-fg-color: var(--cats-orange);
+}
+
+/* Material sets link colour per scheme, so it has to be overridden per scheme too */
+[data-md-color-scheme="default"] {
+  --md-typeset-a-color: var(--cats-blue);
+}
+
+/* Blue links are too dark on the slate background, so dark mode links use the orange accent */
+[data-md-color-scheme="slate"] {
+  --md-typeset-a-color: var(--cats-orange);
+  --cats-status-success: #2bb534;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+.md-grid {
+  max-width: 100%;
+}
+
+.md-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+/* Header and tabs stay Squid Ink in both colour schemes */
+.md-header,
+.md-tabs {
+  background-color: var(--cats-squid-ink);
+}
+
+.mermaid {
+  font-family: var(--md-text-font-family);
+}
+
+.mermaid .node rect,
+.mermaid .node polygon {
+  fill: var(--md-primary-fg-color) !important;
+  stroke: var(--md-primary-fg-color) !important;
+  rx: 8px;
+  ry: 8px;
+}
+
+.mermaid .node .label {
+  color: white !important;
+  fill: white !important;
+}
+
+.mermaid .edgePath path {
+  stroke: var(--md-default-fg-color--light) !important;
+  stroke-width: 2px !important;
+}
+
+.mermaid .edgeLabel {
+  background-color: var(--md-default-bg-color) !important;
+  color: var(--md-default-fg-color--light) !important;
+}
+
+.mermaid .cluster rect {
+  fill: var(--md-code-bg-color) !important;
+  stroke: var(--md-default-fg-color--lightest) !important;
+  rx: 8px;
+  ry: 8px;
+}
+
+.mermaid .cluster span {
+  color: var(--md-default-fg-color) !important;
+  fill: var(--md-default-fg-color) !important;
+}
+
+.md-header__home {
+  display: block;
+  color: inherit;
+}

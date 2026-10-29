@@ -1,0 +1,111 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Per-run VPC for the CATS-created endpoint integration tests (tests/integration/test_cats_endpoints.py)
+
+# Unlike integ-test-vpc.yaml this stack is not persistent: tests/integration/vpc_helpers.py
+# creates one per run before the CATS stack and deletes it after. Private DNS allows one
+# interface endpoint per service per VPC, so a CATS stack that creates its own `ssm` endpoint
+# can share a VPC neither with the base stack, which has one, nor with another pipeline's run.
+#
+# The shape is an isolated data tier: one subnet whose route table has no routes,
+# so the only path from the CATS listener to SSM and S3 is the endpoints CATS creates in it.
+# Private DNS needs both DNS attributes on; the listener's private DNS name needs hostnames.
+
+Parameters:
+  ParameterPrefix:
+    Type: String
+    Description: SSM parameter name prefix unique to this run; the CATS config reads the VPC, subnet and group by these names
+    AllowedPattern: ^/[a-zA-Z0-9_.\-/]+$
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.98.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.98.1.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: !Ref AWS::StackName
+
+  # Explicitly associated and empty: the gateway endpoint CATS creates attaches to this table,
+  # and nothing else routes anywhere.
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # What interface_endpoint_security_group_ids must name for the listener to reach the
+  # endpoints. The VPC's default group would not do: its only inbound rule admits members of
+  # that group, and the CATS listener is in CATS's own group.
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Admit HTTPS from the VPC to the interface endpoints CATS creates
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.98.0.0/16
+          Description: HTTPS from the VPC to the interface endpoints CATS creates
+
+  # Read by the CATS config as SSM parameter names, the way a user names the network under
+  # test, so the deploy resolves the override from a parameter as well as the VPC and subnet.
+  VpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${ParameterPrefix}/vpc-id
+      Type: String
+      Value: !Ref Vpc
+
+  SubnetIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${ParameterPrefix}/subnet-id
+      Type: String
+      Value: !Ref Subnet
+
+  EndpointSecurityGroupIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub ${ParameterPrefix}/endpoint-sg-id
+      Type: String
+      Value: !GetAtt EndpointSecurityGroup.GroupId
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  SubnetId:
+    Value: !Ref Subnet
+  EndpointSecurityGroupId:
+    Value: !GetAtt EndpointSecurityGroup.GroupId
